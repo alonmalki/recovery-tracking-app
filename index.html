@@ -290,6 +290,14 @@ let selectedSlot = null;        // sessionId the live view reports into
 let pendingItem = null;         // item awaiting note in the sheet
 let retroEvents = [];           // events being built in retro sheet
 
+/* ---------- live sync tuning ---------- */
+const POLL_MS = 5000;           // how often to cheaply check for changes (easy to change)
+const FULL_MS = 60000;          // safety-net full refresh, in case a fingerprint edge case is missed
+const TYPING_GRACE_MS = 4000;   // suppress auto-refresh for this long after the last keystroke
+let lastFp = null;              // last seen backend fingerprint (seeded on first refresh)
+let postInFlight = false;       // true while an apiPost() request is being sent
+let lastTypeAt = 0;             // timestamp (ms) of the last input keystroke
+
 /* ---------- helpers ---------- */
 const $ = s => document.querySelector(s);
 const itemName = k => (ITEMS.find(i=>i.key===k)||{}).name || k;
@@ -310,8 +318,17 @@ async function apiGet(){
 async function apiPost(payload){
   // text/plain avoids CORS preflight with Apps Script
   payload.code = passcode;
+  postInFlight = true;
+  try{
+    const r = await fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body:JSON.stringify(payload)});
+    return r.json();
+  } finally { postInFlight = false; }
+}
+/* Cheap change-check: POST {action:'ping'} -> tiny fingerprint string. */
+async function apiPing(){
   const r = await fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},
-    body:JSON.stringify(payload)});
+    body:JSON.stringify({action:'ping',code:passcode})});
   return r.json();
 }
 async function refresh(){
@@ -324,11 +341,27 @@ async function refresh(){
       passcode=''; localStorage.removeItem('sivan_passcode'); openPass(); return;
     }
     STATE.sessions = data.sessions||[]; STATE.events = data.events||[];
+    lastFp = clientFp();   // seed/refresh fingerprint so the next ping won't trigger a redundant full refresh
     $('#connState').textContent = 'מחובר · עודכן ' + new Date().toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit'});
     render();
   }catch(e){
     $('#connState').textContent = '⚠️ אין חיבור — בדקו את כתובת ה-API';
   }
+}
+
+/* Mirror of the backend fingerprint_(): "<sessionsLastRow>.<eventsLastRow>.<latestStamp>".
+   getLastRow() = header + data rows, so a sheet with N data rows reports N+1
+   (1 when empty). latestStamp = max of session end/createdAt and event reportedAt. */
+function clientFp(){
+  const sRows = STATE.sessions.length + 1;
+  const eRows = STATE.events.length + 1;
+  let latest = '';
+  STATE.sessions.forEach(s=>{
+    const v = String(s.createdAt||'') > String(s.end||'') ? String(s.createdAt||'') : String(s.end||'');
+    if(v>latest) latest=v;
+  });
+  STATE.events.forEach(e=>{ const v=String(e.reportedAt||''); if(v>latest) latest=v; });
+  return sRows + '.' + eRows + '.' + latest;
 }
 
 /* ---------- derived ---------- */
@@ -500,8 +533,31 @@ async function saveRetro(){
   if(res.ok){ toast('מקטע היסטורי נשמר ✓'); await refresh(); } else toast('שגיאה: '+res.error);
 }
 
+/* Don't auto-refresh while the user is mid-edit: a sheet is open, a save is in
+   flight, or they typed in the last few seconds. The poll just skips and retries
+   on the next tick, so an update lands as soon as the user is idle again. */
+function refreshBlocked(){
+  if(!passcode) return true;
+  if($('#scrim').classList.contains('show')) return true;        // a bottom sheet is open
+  if(postInFlight) return true;                                  // a save/open/close is being sent
+  if(Date.now() - lastTypeAt < TYPING_GRACE_MS) return true;     // typed very recently
+  return false;
+}
+
 let SYNC_STARTED=false;
-function startSync(){ if(SYNC_STARTED) return; SYNC_STARTED=true; setInterval(()=>{ if(passcode) refresh(); },60000); }
+function startSync(){
+  if(SYNC_STARTED) return; SYNC_STARTED=true;
+  // Cheap poll: check the fingerprint; only do a full refresh when it changed.
+  setInterval(async ()=>{
+    if(refreshBlocked()) return;
+    try{
+      const p = await apiPing();
+      if(p && p.ok && p.fp !== lastFp){ if(refreshBlocked()) return; await refresh(); }
+    }catch(e){ /* transient; next tick retries */ }
+  }, POLL_MS);
+  // Safety net: occasional full refresh self-heals any missed fingerprint edge case.
+  setInterval(()=>{ if(!refreshBlocked()) refresh(); }, FULL_MS);
+}
 
 /* ---------- passcode ---------- */
 function openPass(){ $('#passInput').value=passcode; showSheet('passSheet'); }
@@ -547,6 +603,8 @@ $('#navLive').onclick=()=>showView('live');
 $('#navHist').onclick=()=>{showView('hist');renderHistory();};
 $('#navRetro').onclick=openRetro;
 $('#navRefresh').onclick=refresh;
+/* Any typing/editing in a field pauses auto-refresh briefly (see refreshBlocked). */
+document.addEventListener('input', ()=>{ lastTypeAt = Date.now(); }, true);
 $('#retroAddItem').onclick=()=>{retroEvents.push({itemType:$('#retroItemType').value,note:''});renderRetroItems();};
 $('#retroSave').onclick=saveRetro;
 $('#retroCancel').onclick=closeSheets;
