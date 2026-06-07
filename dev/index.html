@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#5b7a99">
+<title>יומן הערות של סיוון</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700;800&family=Frank+Ruhl+Libre:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#f4f1ea;          /* warm paper */
+    --card:#ffffff;
+    --ink:#2b3440;         /* deep slate */
+    --muted:#7b8794;
+    --line:#e3ded2;
+    --accent:#5b7a99;      /* calm dusty blue */
+    --accent-d:#41617f;
+    --wake:#e0a458;        /* warm amber - wake */
+    --sleep:#6b7b8c;       /* muted slate - sleep */
+    --good:#7a9e7e;        /* sage */
+    --badge:#c8553d;       /* terracotta count */
+    --shadow:0 2px 12px rgba(43,52,64,.08);
+    --shadow-lg:0 8px 30px rgba(43,52,64,.16);
+    --r:18px;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;padding:0;}
+  body{
+    font-family:'Heebo',sans-serif;background:var(--bg);color:var(--ink);
+    min-height:100vh;line-height:1.5;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  .display{font-family:'Frank Ruhl Libre',serif;}
+  .app{max-width:520px;margin:0 auto;padding:16px 16px 120px;}
+
+  /* Header */
+  header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 4px 16px;}
+  header h1{font-size:1.45rem;margin:0;font-weight:700;letter-spacing:-.5px;}
+  header .sub{color:var(--muted);font-size:.8rem;margin-top:2px;}
+  .who{display:flex;align-items:center;gap:6px;background:var(--card);border:1px solid var(--line);
+    border-radius:999px;padding:6px 12px;font-size:.82rem;box-shadow:var(--shadow);cursor:pointer;font-weight:500;white-space:nowrap;}
+
+  /* Status banner */
+  .status{border-radius:var(--r);padding:16px;margin-bottom:16px;box-shadow:var(--shadow);
+    display:flex;align-items:center;gap:14px;transition:.3s;}
+  .status.awake{background:linear-gradient(135deg,#fbe6cf,#f6dab0);border:1px solid #ebcf9c;}
+  .status.asleep{background:linear-gradient(135deg,#e9edf1,#dde3ea);border:1px solid #cdd6e0;}
+  .status .dot{width:14px;height:14px;border-radius:50%;flex:none;}
+  .status.awake .dot{background:var(--wake);box-shadow:0 0 0 5px rgba(224,164,88,.25);animation:pulse 2s infinite;}
+  .status.asleep .dot{background:var(--sleep);}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 4px rgba(224,164,88,.25);}50%{box-shadow:0 0 0 9px rgba(224,164,88,.05);}}
+  .status .txt{flex:1;}
+  .status .txt b{display:block;font-size:1.05rem;}
+  .status .txt span{font-size:.82rem;color:var(--muted);}
+
+  /* Big primary buttons */
+  .bigbtn{width:100%;border:none;border-radius:var(--r);padding:20px;font-size:1.25rem;font-weight:700;
+    font-family:'Heebo';color:#fff;cursor:pointer;box-shadow:var(--shadow-lg);transition:transform .08s, filter .2s;
+    display:flex;align-items:center;justify-content:center;gap:10px;}
+  .bigbtn:active{transform:scale(.98);}
+  .bigbtn.wake{background:linear-gradient(135deg,var(--wake),#d4923f);}
+  .bigbtn.sleep{background:linear-gradient(135deg,var(--sleep),#586575);}
+  .bigbtn .ico{font-size:1.4rem;}
+
+  /* Reporting-target banner — always shows which slot taps land in */
+  .target{position:sticky;top:0;z-index:30;margin:14px 0 4px;border-radius:14px;padding:12px 14px;
+    background:linear-gradient(135deg,#e8eef4,#dde6f0);border:1px solid #c6d4e3;
+    display:flex;align-items:center;gap:10px;box-shadow:var(--shadow);}
+  .target .ti{font-size:1.2rem;flex:none;}
+  .target .tc{flex:1;min-width:0;}
+  .target .tc b{display:block;font-size:.95rem;line-height:1.2;}
+  .target .tc span{font-size:.76rem;color:var(--muted);}
+  .target.live{background:linear-gradient(135deg,#fbe6cf,#f6dab0);border-color:#ebcf9c;}
+  .target.past{background:linear-gradient(135deg,#eef0f2,#e3e7ec);border-color:#d3dae1;}
+  .target .chg{font-size:.74rem;font-weight:700;color:var(--accent-d);background:#fff;
+    border:1px solid #c6d4e3;border-radius:999px;padding:5px 11px;cursor:pointer;flex:none;}
+
+  /* Slot selector */
+  .slotbar{margin:16px 0 10px;display:flex;align-items:center;gap:8px;font-size:.85rem;}
+  .slotbar label{color:var(--muted);white-space:nowrap;}
+  .slotbar select{flex:1;font-family:'Heebo';font-size:.85rem;padding:10px;border-radius:12px;
+    border:1px solid var(--line);background:var(--card);color:var(--ink);}
+
+  /* Item grid */
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px;}
+  .item{position:relative;background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+    padding:18px 14px;text-align:center;cursor:pointer;box-shadow:var(--shadow);transition:transform .08s,border-color .2s;
+    min-height:104px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;}
+  .item:active{transform:scale(.97);border-color:var(--accent);}
+  .item.wide{grid-column:1 / -1;}
+  .item .emoji{font-size:1.7rem;line-height:1;}
+  .item .name{font-size:.92rem;font-weight:500;}
+  .item .badge{position:absolute;top:8px;left:8px;background:var(--badge);color:#fff;font-weight:700;
+    min-width:26px;height:26px;border-radius:999px;display:flex;align-items:center;justify-content:center;
+    font-size:.8rem;padding:0 6px;box-shadow:0 2px 6px rgba(200,85,61,.4);transform:scale(0);transition:transform .25s cubic-bezier(.3,1.5,.6,1);}
+  .item .badge.show{transform:scale(1);}
+  .disabled{opacity:.5;pointer-events:none;}
+
+  /* Toast */
+  .toast{position:fixed;bottom:96px;right:50%;transform:translate(50%,20px);background:var(--ink);color:#fff;
+    padding:12px 20px;border-radius:999px;font-size:.9rem;font-weight:500;box-shadow:var(--shadow-lg);opacity:0;
+    pointer-events:none;transition:.3s;z-index:60;max-width:90%;text-align:center;}
+  .toast.show{opacity:1;transform:translate(50%,0);}
+
+  /* Bottom nav */
+  .nav{position:fixed;bottom:0;right:0;left:0;background:rgba(255,255,255,.92);backdrop-filter:blur(10px);
+    border-top:1px solid var(--line);display:flex;justify-content:space-around;padding:8px 8px calc(8px + env(safe-area-inset-bottom));z-index:50;}
+  .nav button{flex:1;background:none;border:none;font-family:'Heebo';color:var(--muted);font-size:.72rem;
+    padding:6px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;border-radius:12px;}
+  .nav button .ni{font-size:1.25rem;}
+  .nav button.active{color:var(--accent);font-weight:700;}
+
+  /* Sheet / modal */
+  .scrim{position:fixed;inset:0;background:rgba(43,52,64,.45);opacity:0;pointer-events:none;transition:.25s;z-index:70;}
+  .scrim.show{opacity:1;pointer-events:auto;}
+  .sheet{position:fixed;right:0;left:0;bottom:0;background:var(--bg);border-radius:24px 24px 0 0;z-index:80;
+    transform:translateY(110%);transition:transform .3s cubic-bezier(.3,.8,.3,1);max-height:90vh;overflow-y:auto;
+    padding:8px 18px calc(24px + env(safe-area-inset-bottom));max-width:520px;margin:0 auto;}
+  .sheet.show{transform:translateY(0);}
+  .grab{width:40px;height:5px;background:var(--line);border-radius:99px;margin:8px auto 14px;}
+  .sheet h2{font-size:1.2rem;margin:0 0 4px;}
+  .sheet .h-sub{color:var(--muted);font-size:.85rem;margin-bottom:16px;}
+  label.fld{display:block;font-size:.82rem;color:var(--muted);margin:12px 0 5px;font-weight:500;}
+  input[type=text],input[type=datetime-local],input[type=date],input[type=time],textarea,select.full{
+    width:100%;font-family:'Heebo';font-size:1rem;padding:13px;border:1px solid var(--line);border-radius:12px;
+    background:var(--card);color:var(--ink);}
+  textarea{min-height:80px;resize:vertical;}
+  .row{display:flex;gap:10px;}
+  .row>*{flex:1;}
+  .primary{width:100%;margin-top:18px;background:var(--accent);color:#fff;border:none;border-radius:14px;
+    padding:16px;font-size:1.05rem;font-weight:700;font-family:'Heebo';cursor:pointer;box-shadow:var(--shadow);}
+  .primary:active{transform:scale(.99);}
+  .ghost{width:100%;margin-top:8px;background:none;border:none;color:var(--muted);font-family:'Heebo';
+    font-size:.9rem;padding:10px;cursor:pointer;}
+  .ghost.danger{color:#c0392b;font-weight:600;}
+
+  /* Full-screen lock shown until a valid passcode is entered. Sits ABOVE app
+     content/nav (z-index 65) but BELOW the scrim (70) and passcode sheet (80),
+     so only the passcode sheet is reachable while locked. */
+  .gate{position:fixed;inset:0;background:var(--bg);z-index:65;display:none;
+    flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;padding:24px;}
+  .gate.show{display:flex;}
+  .gate .glock{font-size:2.4rem;}
+  .gate .gtitle{font-size:1.15rem;font-weight:700;}
+  .gate .gsub{color:var(--muted);font-size:.9rem;}
+
+  /* History list */
+  .hsession{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px;margin-bottom:12px;box-shadow:var(--shadow);}
+  .hsession .htop{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:8px;}
+  .hsession .htime{font-weight:700;font-size:.95rem;}
+  .hsession .hwho{font-size:.78rem;color:var(--muted);}
+  .tag{display:inline-block;background:#eef1ee;color:var(--good);font-size:.7rem;font-weight:700;padding:2px 8px;border-radius:999px;margin-inline-start:6px;}
+  .tag.auto{background:#fbeae6;color:var(--badge);}
+  .hev{font-size:.85rem;padding:6px 0;border-top:1px dashed var(--line);display:flex;gap:8px;}
+  .hev .het{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap;}
+  .hev .hen{flex:1;}
+  .hev .hby{color:var(--muted);font-size:.78rem;}
+  .empty{text-align:center;color:var(--muted);padding:40px 20px;font-size:.9rem;}
+  .spin{display:inline-block;width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--accent);
+    border-radius:50%;animation:rot .7s linear infinite;vertical-align:middle;}
+  @keyframes rot{to{transform:rotate(360deg);}}
+  .pending{font-size:.75rem;color:var(--wake);text-align:center;margin-top:8px;}
+  .hidden{display:none !important;}
+
+  /* historic event builder rows */
+  .hbrow{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);
+    border-radius:12px;padding:8px 10px;margin-bottom:6px;font-size:.85rem;}
+  .hbrow .x{color:var(--badge);font-weight:700;cursor:pointer;font-size:1.1rem;padding:0 4px;}
+</style>
+</head>
+<body>
+<!-- Full-screen lock: covers the whole app until a valid passcode is entered. -->
+<div class="gate" id="gate">
+  <div class="glock">🔒</div>
+  <div class="gtitle">נדרש קוד כניסה</div>
+  <div class="gsub">הזינו את הקוד המשותף כדי לגשת ליומן.</div>
+</div>
+<div class="app">
+  <header>
+    <div>
+      <h1 class="display">יומן הערות של סיוון</h1>
+      <div class="sub" id="connState">מתחבר…</div>
+    </div>
+    <div class="who" id="whoBtn"><span>👤</span><span id="whoName">מתעד.ת</span></div>
+  </header>
+
+  <!-- LIVE VIEW -->
+  <section id="liveView">
+    <div class="status asleep" id="statusBox">
+      <div class="dot"></div>
+      <div class="txt"><b id="statusTitle">סיוון ישנה</b><span id="statusSub">אין מקטע פעיל</span></div>
+    </div>
+
+    <button class="bigbtn wake" id="wakeBtn"><span class="ico">☀️</span><span>סיוון התעוררה</span></button>
+    <button class="bigbtn sleep hidden" id="sleepBtn" style="margin-top:12px;"><span class="ico">🌙</span><span>חזרה לישון</span></button>
+
+    <div class="target past" id="targetBox" style="display:none;">
+      <div class="ti" id="targetIco">🎯</div>
+      <div class="tc"><b id="targetTitle"></b><span id="targetSub"></span></div>
+      <button class="chg" id="targetChange">שינוי מקטע</button>
+    </div>
+
+    <div class="slotbar hidden" id="slotBar">
+      <label>מדווח על מקטע:</label>
+      <select id="slotSelect"></select>
+    </div>
+
+    <div class="grid" id="itemGrid"></div>
+    <div class="pending hidden" id="pendingNote"></div>
+  </section>
+
+  <!-- HISTORY VIEW -->
+  <section id="histView" class="hidden">
+    <div id="histList"></div>
+  </section>
+</div>
+
+<!-- Bottom nav -->
+<nav class="nav">
+  <button id="navLive" class="active"><span class="ni">📋</span>תיעוד חי</button>
+  <button id="navHist"><span class="ni">📚</span>היסטוריה</button>
+  <button id="navRetro"><span class="ni">⏪</span>תיעוד היסטורי</button>
+  <button id="navRefresh"><span class="ni">🔄</span>רענון</button>
+</nav>
+
+<div class="toast" id="toast"></div>
+
+<!-- Generic note sheet -->
+<div class="scrim" id="scrim"></div>
+<div class="sheet" id="noteSheet">
+  <div class="grab"></div>
+  <h2 id="noteTitle">דיווח פריט</h2>
+  <div class="h-sub" id="noteSub"></div>
+  <label class="fld">זמן הדיווח</label>
+  <input type="datetime-local" id="noteTime">
+  <label class="fld">הערה (לא חובה)</label>
+  <textarea id="noteText" placeholder="פירוט, תיאור התגובה, מדדים…"></textarea>
+  <button class="primary" id="noteSave">שמירה</button>
+  <button class="ghost" id="noteCancel">ביטול</button>
+</div>
+
+<!-- Passcode sheet -->
+<div class="sheet" id="passSheet">
+  <div class="grab"></div>
+  <h2>🔒 קוד כניסה</h2>
+  <div class="h-sub">הזינו את הקוד המשותף כדי לגשת ליומן. הקוד יישמר במכשיר.</div>
+  <label class="fld">קוד</label>
+  <input type="text" inputmode="numeric" id="passInput" placeholder="••••">
+  <button class="primary" id="passSave">כניסה</button>
+</div>
+
+<!-- Name sheet -->
+<div class="sheet" id="nameSheet">
+  <div class="grab"></div>
+  <h2>מי מתעד.ת?</h2>
+  <div class="h-sub">השם יישמר במכשיר ויצורף לכל דיווח.</div>
+  <label class="fld">שם המתעד.ת</label>
+  <input type="text" id="nameInput" placeholder="לדוגמה: דנה">
+  <button class="primary" id="nameSave">שמירה</button>
+  <button class="ghost danger" id="logoutBtn">התנתקות (החלפת משתמש.ת)</button>
+</div>
+
+<!-- Retro (historic) sheet -->
+<div class="sheet" id="retroSheet">
+  <div class="grab"></div>
+  <h2>תיעוד מקטע בדיעבד</h2>
+  <div class="h-sub">יצירת מקטע שכבר הסתיים, עם הפריטים שתועדו בו.</div>
+  <div class="row">
+    <div><label class="fld">תחילת המקטע</label><input type="datetime-local" id="retroStart"></div>
+    <div><label class="fld">סיום המקטע</label><input type="datetime-local" id="retroEnd"></div>
+  </div>
+  <label class="fld">הוספת פריט שתועד</label>
+  <div class="row">
+    <select class="full" id="retroItemType" style="flex:2"></select>
+    <button class="primary" id="retroAddItem" style="margin:0;flex:1;padding:13px;">הוסף</button>
+  </div>
+  <div id="retroItems" style="margin-top:10px;"></div>
+  <button class="primary" id="retroSave">שמירת המקטע</button>
+  <button class="ghost" id="retroCancel">ביטול</button>
+</div>
+
+<script>
+/* =========================================================================
+   CONFIG — paste your Apps Script Web App URL here after deploying Code.gs
+   ========================================================================= */
+const API_URL = "https://script.google.com/macros/s/AKfycby1ZwY_LdOXQpm0F7tmy1prqyLJzWVqZTAwIJOOwQecHv10Vh08-0KH4gdT9AYk7MLTIg/exec";
+
+/* Tracked items (from the original Google Form) */
+const ITEMS = [
+  {key:'eyes_spont',  emoji:'👁️', name:'פתיחת עיניים — עצמוני'},
+  {key:'eyes_initiated', emoji:'🤲', name:'פתיחת עיניים — יזום ע״י אדם אחר'},
+  {key:'eyes_env',    emoji:'💡', name:'פתיחת עיניים — תגובה לסביבה'},
+  {key:'feeding',     emoji:'🥄', name:'שיתוף פעולה בהאכלה'},
+  {key:'instructions',emoji:'🗣️', name:'תגובה להוראות'},
+  {key:'music',       emoji:'🎵', name:'תגובה למוזיקה'},
+  {key:'general',     emoji:'📝', name:'הערות כלליות', wide:true},
+];
+
+/* ---------- state ---------- */
+let STATE = { sessions: [], events: [] };
+let caregiver = localStorage.getItem('sivan_caregiver') || '';
+let passcode = localStorage.getItem('sivan_passcode') || '';
+let selectedSlot = null;        // sessionId the live view reports into
+let pendingItem = null;         // item awaiting note in the sheet
+let retroEvents = [];           // events being built in retro sheet
+
+/* ---------- live sync tuning ---------- */
+const POLL_MS = 5000;           // how often to cheaply check for changes (easy to change)
+const FULL_MS = 60000;          // safety-net full refresh, in case a fingerprint edge case is missed
+const TYPING_GRACE_MS = 4000;   // suppress auto-refresh for this long after the last keystroke
+let lastFp = null;              // last seen backend fingerprint (seeded on first refresh)
+let postInFlight = false;       // true while an apiPost() request is being sent
+let lastTypeAt = 0;             // timestamp (ms) of the last input keystroke
+
+/* ---------- helpers ---------- */
+const $ = s => document.querySelector(s);
+const itemName = k => (ITEMS.find(i=>i.key===k)||{}).name || k;
+function fmtTime(iso){ if(!iso) return ''; const d=new Date(iso);
+  return d.toLocaleString('he-IL',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }
+function fmtHM(iso){ if(!iso) return '—'; return new Date(iso).toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit'}); }
+function nowLocalInput(){ const d=new Date(); d.setMinutes(d.getMinutes()-d.getTimezoneOffset());
+  return d.toISOString().slice(0,16); }
+function inputToIso(v){ return v ? new Date(v).toISOString() : ''; }
+
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'),2200); }
+
+/* ---------- API ---------- */
+async function apiGet(){
+  const r = await fetch(API_URL + '?code=' + encodeURIComponent(passcode)); return r.json();
+}
+async function apiPost(payload){
+  // text/plain avoids CORS preflight with Apps Script
+  payload.code = passcode;
+  postInFlight = true;
+  try{
+    const r = await fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body:JSON.stringify(payload)});
+    return r.json();
+  } finally { postInFlight = false; }
+}
+/* Cheap change-check: POST {action:'ping'} -> tiny fingerprint string. */
+async function apiPing(){
+  const r = await fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},
+    body:JSON.stringify({action:'ping',code:passcode})});
+  return r.json();
+}
+async function refresh(){
+  if(!passcode){ openPass(); return; }
+  $('#connState').innerHTML = '<span class="spin"></span> טוען נתונים…';
+  try{
+    const data = await apiGet();
+    if(data && data.error==='bad_passcode'){
+      $('#connState').textContent='🔒 קוד שגוי';
+      passcode=''; localStorage.removeItem('sivan_passcode'); showGate(); return;
+    }
+    STATE.sessions = data.sessions||[]; STATE.events = data.events||[];
+    lastFp = clientFp();   // seed/refresh fingerprint so the next ping won't trigger a redundant full refresh
+    $('#connState').textContent = 'מחובר · עודכן ' + new Date().toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit'});
+    render();
+  }catch(e){
+    $('#connState').textContent = '⚠️ אין חיבור — בדקו את כתובת ה-API';
+  }
+}
+
+/* Mirror of the backend fingerprint_(): "<sessionsLastRow>.<eventsLastRow>.<latestStamp>".
+   getLastRow() = header + data rows, so a sheet with N data rows reports N+1
+   (1 when empty). latestStamp = max of session end/createdAt and event reportedAt. */
+function clientFp(){
+  const sRows = STATE.sessions.length + 1;
+  const eRows = STATE.events.length + 1;
+  let latest = '';
+  STATE.sessions.forEach(s=>{
+    const v = String(s.createdAt||'') > String(s.end||'') ? String(s.createdAt||'') : String(s.end||'');
+    if(v>latest) latest=v;
+  });
+  STATE.events.forEach(e=>{ const v=String(e.reportedAt||''); if(v>latest) latest=v; });
+  return sRows + '.' + eRows + '.' + latest;
+}
+
+/* ---------- derived ---------- */
+function openSession(){ return STATE.sessions.find(s=>!s.end); }
+function sessionsSorted(){ return [...STATE.sessions].sort((a,b)=>new Date(b.start)-new Date(a.start)); }
+function eventsFor(id){ return STATE.events.filter(e=>e.sessionId===id); }
+function countInSlot(id,key){ return STATE.events.filter(e=>e.sessionId===id && e.itemType===key).length; }
+
+/* ---------- render ---------- */
+function render(){
+  const op = openSession();
+  const box=$('#statusBox');
+  if(op){
+    box.className='status awake';
+    $('#statusTitle').textContent='סיוון ערה';
+    $('#statusSub').textContent='התעוררה '+fmtHM(op.start);
+    $('#wakeBtn').classList.add('hidden');
+    $('#sleepBtn').classList.remove('hidden');
+  }else{
+    box.className='status asleep';
+    $('#statusTitle').textContent='סיוון ישנה';
+    $('#statusSub').textContent= STATE.sessions.length? 'אין מקטע פעיל — אפשר לדווח על מקטע קודם' : 'אין מקטע פעיל';
+    $('#wakeBtn').classList.remove('hidden');
+    $('#sleepBtn').classList.add('hidden');
+  }
+  renderSlotSelect();
+  renderGrid();
+  renderHistory();
+  $('#whoName').textContent = caregiver || 'מתעד.ת';
+}
+
+function renderSlotSelect(){
+  const sel=$('#slotSelect'); const sorted=sessionsSorted();
+  const op=openSession();
+  // default selection: open session, else most recent
+  if(!selectedSlot || !STATE.sessions.find(s=>s.id===selectedSlot)){
+    selectedSlot = op ? op.id : (sorted[0]? sorted[0].id : null);
+  }
+  if(sorted.length===0){ $('#slotBar').classList.add('hidden'); $('#targetBox').style.display='none'; return; }
+  sel.innerHTML = sorted.map(s=>{
+    const label = (s.end? fmtTime(s.start)+' – '+fmtHM(s.end) : fmtTime(s.start)+' · פעיל')
+      + (s.caregiver? ' · '+s.caregiver:'');
+    return `<option value="${s.id}" ${s.id===selectedSlot?'selected':''}>${label}</option>`;
+  }).join('');
+  renderTarget();
+}
+
+/* Prominent banner showing exactly which slot reports will attach to */
+function renderTarget(){
+  const box=$('#targetBox'); const s=STATE.sessions.find(x=>x.id===selectedSlot);
+  if(!s){ box.style.display='none'; return; }
+  box.style.display='flex';
+  const isLive = !s.end;
+  box.className = 'target '+(isLive?'live':'past');
+  $('#targetIco').textContent = isLive?'☀️':'🕓';
+  $('#targetTitle').textContent = isLive
+    ? 'מדווח על המקטע הפעיל'
+    : 'מדווח על מקטע קודם';
+  $('#targetSub').textContent = isLive
+    ? 'התחיל '+fmtHM(s.start)+(s.caregiver?(' · '+s.caregiver):'')
+    : fmtTime(s.start)+' – '+fmtHM(s.end)+(s.caregiver?(' · '+s.caregiver):'');
+}
+
+function renderGrid(){
+  const grid=$('#itemGrid'); const sid=selectedSlot;
+  const usable = !!sid;
+  grid.innerHTML = ITEMS.map(it=>{
+    const c = sid? countInSlot(sid,it.key):0;
+    return `<div class="item ${it.wide?'wide':''} ${usable?'':'disabled'}" data-key="${it.key}">
+      <div class="badge ${c>0?'show':''}">${c||''}</div>
+      <div class="emoji">${it.emoji}</div>
+      <div class="name">${it.name}</div>
+    </div>`;
+  }).join('');
+  grid.querySelectorAll('.item').forEach(el=>{
+    el.onclick=()=>openNote(el.dataset.key);
+  });
+  const note=$('#pendingNote');
+  if(!usable){ note.textContent='התחילו מקטע (\"סיוון התעוררה\") כדי לדווח, או בחרו מקטע קודם.'; note.classList.remove('hidden'); }
+  else note.classList.add('hidden');
+}
+
+function renderHistory(){
+  const list=$('#histList'); const sorted=sessionsSorted();
+  if(sorted.length===0){ list.innerHTML='<div class="empty">עדיין אין תיעוד.<br>התחילו מ\"סיוון התעוררה\".</div>'; return; }
+  list.innerHTML = sorted.map(s=>{
+    const evs = eventsFor(s.id).sort((a,b)=>new Date(a.reportedAt)-new Date(b.reportedAt));
+    const closedTag = s.end ? (s.closedBy==='auto'
+        ? '<span class="tag auto">לא נסגר ע״י המשתמש</span>'
+        : '<span class="tag">נסגר</span>')
+      : '<span class="tag" style="background:#fbe6cf;color:#a86d20">פעיל</span>';
+    const evHtml = evs.length? evs.map(e=>{
+      // show the reporter only when it differs from the slot owner (cross-caregiver case)
+      const by = (e.caregiver && e.caregiver!==s.caregiver)
+        ? ` <span class="hby">· דווח ע״י ${e.caregiver}</span>` : '';
+      return `
+      <div class="hev"><span class="het">${fmtHM(e.reportedAt)}</span>
+      <span class="hen"><b>${itemName(e.itemType)}</b>${e.note?(' — '+e.note):''}${by}</span></div>`;
+    }).join('')
+      : '<div class="hev" style="color:#aab">— אין פריטים —</div>';
+    return `<div class="hsession">
+      <div class="htop">
+        <div class="htime">${fmtTime(s.start)} – ${s.end?fmtHM(s.end):'…'}</div>
+        <div class="hwho">${s.caregiver||''} ${closedTag}</div>
+      </div>${evHtml}</div>`;
+  }).join('');
+}
+
+/* ---------- actions ---------- */
+async function doWake(){
+  if(!caregiver){ openName(); return; }
+  $('#wakeBtn').disabled=true;
+  const res=await apiPost({action:'openSession',caregiver:caregiver,start:new Date().toISOString()});
+  $('#wakeBtn').disabled=false;
+  if(res.ok){ selectedSlot=res.sessionId; toast('מקטע חדש נפתח ☀️'); await refresh(); }
+  else toast('שגיאה: '+res.error);
+}
+async function doSleep(){
+  const op=openSession(); if(!op) return;
+  $('#sleepBtn').disabled=true;
+  const res=await apiPost({action:'closeSession',sessionId:op.id,end:new Date().toISOString()});
+  $('#sleepBtn').disabled=false;
+  if(res.ok){ toast('המקטע נסגר 🌙'); await refresh(); }
+  else toast('שגיאה: '+res.error);
+}
+
+function openNote(key){
+  if(!selectedSlot){ toast('בחרו או פתחו מקטע'); return; }
+  pendingItem=key;
+  $('#noteTitle').textContent=itemName(key);
+  const s=STATE.sessions.find(x=>x.id===selectedSlot);
+  $('#noteSub').textContent='🕓 משויך למקטע: '+fmtTime(s.start)+(s.end?(' – '+fmtHM(s.end)):' · פעיל');
+  $('#noteTime').value=nowLocalInput();
+  $('#noteText').value='';
+  showSheet('noteSheet');
+}
+async function saveNote(){
+  const key=pendingItem; if(!key) return;
+  if(!caregiver){ openName(); return; }   // ensure every event records who logged it
+  closeSheets();
+  const res=await apiPost({action:'addEvent',sessionId:selectedSlot,itemType:key,
+    note:$('#noteText').value.trim(),reportedAt:inputToIso($('#noteTime').value),
+    caregiver:caregiver});
+  if(res.ok){ toast('נשמר ✓'); await refresh(); } else toast('שגיאה: '+res.error);
+}
+
+/* ---------- retro ---------- */
+function openRetro(){
+  retroEvents=[];
+  $('#retroStart').value=nowLocalInput(); $('#retroEnd').value=nowLocalInput();
+  $('#retroItemType').innerHTML=ITEMS.map(i=>`<option value="${i.key}">${i.name}</option>`).join('');
+  renderRetroItems();
+  showSheet('retroSheet');
+}
+function renderRetroItems(){
+  const box=$('#retroItems');
+  box.innerHTML = retroEvents.length? retroEvents.map((e,i)=>`
+    <div class="hbrow"><span style="flex:1">${itemName(e.itemType)}${e.note?(' — '+e.note):''}</span>
+    <span class="x" data-i="${i}">✕</span></div>`).join('') : '';
+  box.querySelectorAll('.x').forEach(x=>x.onclick=()=>{retroEvents.splice(+x.dataset.i,1);renderRetroItems();});
+}
+async function saveRetro(){
+  if(!caregiver){ openName(); return; }
+  const payload={action:'addHistoric',caregiver:caregiver,
+    start:inputToIso($('#retroStart').value),end:inputToIso($('#retroEnd').value),
+    events:retroEvents.map(e=>({itemType:e.itemType,note:e.note,reportedAt:inputToIso($('#retroStart').value)}))};
+  closeSheets();
+  const res=await apiPost(payload);
+  if(res.ok){ toast('מקטע היסטורי נשמר ✓'); await refresh(); } else toast('שגיאה: '+res.error);
+}
+
+/* Don't auto-refresh while the user is mid-edit: a sheet is open, a save is in
+   flight, or they typed in the last few seconds. The poll just skips and retries
+   on the next tick, so an update lands as soon as the user is idle again. */
+function refreshBlocked(){
+  if(!passcode) return true;
+  if($('#scrim').classList.contains('show')) return true;        // a bottom sheet is open
+  if(postInFlight) return true;                                  // a save/open/close is being sent
+  if(Date.now() - lastTypeAt < TYPING_GRACE_MS) return true;     // typed very recently
+  return false;
+}
+
+let SYNC_STARTED=false;
+function startSync(){
+  if(SYNC_STARTED) return; SYNC_STARTED=true;
+  // Cheap poll: check the fingerprint; only do a full refresh when it changed.
+  setInterval(async ()=>{
+    if(refreshBlocked()) return;
+    try{
+      const p = await apiPing();
+      if(p && p.ok && p.fp !== lastFp){ if(refreshBlocked()) return; await refresh(); }
+    }catch(e){ /* transient; next tick retries */ }
+  }, POLL_MS);
+  // Safety net: occasional full refresh self-heals any missed fingerprint edge case.
+  setInterval(()=>{ if(!refreshBlocked()) refresh(); }, FULL_MS);
+}
+
+/* ---------- passcode gate ----------
+   While gated, the whole app is covered and ONLY the passcode sheet is reachable:
+   no scrim-tap close, no advancing to the name prompt, until a correct code is in. */
+let gated=false;
+function showGate(){
+  gated=true;
+  $('#gate').classList.add('show');
+  openPass();
+}
+function hideGate(){
+  gated=false;
+  $('#gate').classList.remove('show');
+}
+function openPass(){ $('#passInput').value=passcode; showSheet('passSheet'); }
+async function savePass(){
+  const v=$('#passInput').value.trim(); if(!v){ toast('נא להזין קוד'); return; }
+  // Validate against the backend BEFORE letting the user past the gate.
+  // apiPing() uses the live `passcode`, so set it first, then check.
+  $('#connState').innerHTML = '<span class="spin"></span> בודק קוד…';
+  passcode=v;
+  let ping; try{ ping = await apiPing(); }catch(e){ ping=null; }
+  if(!ping){ $('#connState').textContent='⚠️ אין חיבור — נסו שוב'; passcode=''; return; }
+  if(ping.error==='bad_passcode' || !ping.ok){
+    $('#connState').textContent='🔒 קוד שגוי';
+    passcode=''; toast('קוד שגוי'); return;   // stay gated, sheet stays open
+  }
+  // accepted
+  localStorage.setItem('sivan_passcode',v);
+  hideGate(); closeSheets();
+  await refresh(); startSync();
+  if(!caregiver) setTimeout(openName,300);
+}
+
+/* ---------- name ---------- */
+function openName(){ $('#nameInput').value=caregiver; showSheet('nameSheet'); }
+function saveName(){
+  const v=$('#nameInput').value.trim(); if(!v){ toast('נא להזין שם'); return; }
+  caregiver=v; localStorage.setItem('sivan_caregiver',v); closeSheets(); render(); toast('שלום '+v+' 👋');
+}
+/* Logout: forget name + passcode on this device and reload. Next visit must
+   re-enter the passcode (hard gate) and then the name. */
+function doLogout(){
+  if(!confirm('להתנתק? יהיה צורך להזין שוב קוד כניסה ושם.')) return;
+  localStorage.removeItem('sivan_caregiver');
+  localStorage.removeItem('sivan_passcode');
+  location.reload();
+}
+
+/* ---------- sheets ui ---------- */
+function showSheet(id){ $('#scrim').classList.add('show'); $('#'+id).classList.add('show'); }
+function closeSheets(){
+  if(gated) return;   // while locked, the passcode sheet must not be dismissable
+  $('#scrim').classList.remove('show');
+  document.querySelectorAll('.sheet').forEach(s=>s.classList.remove('show')); pendingItem=null; }
+
+/* ---------- nav ---------- */
+function showView(which){
+  $('#liveView').classList.toggle('hidden',which!=='live');
+  $('#histView').classList.toggle('hidden',which!=='hist');
+  $('#navLive').classList.toggle('active',which==='live');
+  $('#navHist').classList.toggle('active',which==='hist');
+}
+
+/* ---------- wire up ---------- */
+$('#wakeBtn').onclick=doWake;
+$('#sleepBtn').onclick=doSleep;
+$('#slotSelect').onchange=e=>{selectedSlot=e.target.value;renderTarget();renderGrid();$('#slotBar').classList.add('hidden');};
+$('#targetChange').onclick=()=>$('#slotBar').classList.toggle('hidden');
+$('#noteSave').onclick=saveNote;
+$('#noteCancel').onclick=closeSheets;
+$('#scrim').onclick=closeSheets;
+$('#whoBtn').onclick=openName;
+$('#nameSave').onclick=saveName;
+$('#logoutBtn').onclick=doLogout;
+$('#passSave').onclick=savePass;
+$('#navLive').onclick=()=>showView('live');
+$('#navHist').onclick=()=>{showView('hist');renderHistory();};
+$('#navRetro').onclick=openRetro;
+$('#navRefresh').onclick=refresh;
+/* Any typing/editing in a field pauses auto-refresh briefly (see refreshBlocked). */
+document.addEventListener('input', ()=>{ lastTypeAt = Date.now(); }, true);
+$('#retroAddItem').onclick=()=>{retroEvents.push({itemType:$('#retroItemType').value,note:''});renderRetroItems();};
+$('#retroSave').onclick=saveRetro;
+$('#retroCancel').onclick=closeSheets;
+
+/* ---------- init ---------- */
+if(API_URL.startsWith('PASTE')){
+  $('#connState').textContent='⚠️ הדביקו את כתובת ה-API בקובץ';
+}else if(!passcode){
+  showGate();              // no code on this device -> hard lock, ask for it
+}else{
+  refresh();               // a bad_passcode response will raise the gate
+  startSync();
+  if(!caregiver) setTimeout(openName,400);
+}
+</script>
+</body>
+</html>
