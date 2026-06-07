@@ -192,6 +192,8 @@
   .iecard .iefld{display:block;font-size:.78rem;color:var(--muted);margin:8px 0 4px;font-weight:500;}
   .iecard .iewide{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:.9rem;cursor:pointer;}
   .iecard .iewide input{width:18px;height:18px;}
+  /* spinner shown inside the primary (blue) save button while saving */
+  .primary .spin{border-color:rgba(255,255,255,.4);border-top-color:#fff;}
 
   /* DEV environment marker — only shown on the /dev/ build (set in JS). */
   .envbadge{display:none;align-self:center;background:#c0392b;color:#fff;font-weight:800;
@@ -595,8 +597,8 @@ function renderItemsEditor(){
       <input type="text" class="ie-name" value="${escAttr(it.name)}" placeholder="שם הפריט">
       <label class="iefld">אימוג'י</label>
       <input type="text" class="ie-emoji" value="${escAttr(it.emoji)}" placeholder="לדוגמה: 👁️">
-      <label class="iefld">פרטים (מופרדים בפסיק, לא חובה)</label>
-      <input type="text" class="ie-subs" value="${escAttr(it.subItems.join(', '))}" placeholder="פרט א, פרט ב">
+      <label class="iefld">פריטים (מופרדים בפסיק, לא חובה)</label>
+      <input type="text" class="ie-subs" value="${escAttr(it.subItems.join(', '))}" placeholder="לדוגמה: פריט א, פריט ב">
       <label class="iewide"><input type="checkbox" class="ie-wide" ${it.wide?'checked':''}> רוחב מלא (אריח גדול)</label>
     </div>`;
   }).join('') || '<div class="empty">אין פריטים. הוסיפו פריט חדש למטה.</div>';
@@ -652,17 +654,24 @@ async function itemsSaveDraft(){
     return {order:i,key:key,name:it.name,emoji:(it.emoji||'').trim(),
       wide:!!it.wide,subItems:(it.subItems||[]).map(s=>s.trim()).filter(Boolean).join(', ')};
   });
-  // 5. POST the whole table
-  $('#itemsSave').disabled=true;
-  const res=await apiPost({action:'saveItems',items:items});
-  $('#itemsSave').disabled=false;
-  if(res && res.ok){
-    toast('הפריטים נשמרו ✓');
-    itemsDraft=null;            // clear so next open re-clones from updated ITEMS
-    await refresh();            // re-pull -> buildItems -> live grid updated
-    renderItemsEditor();        // redraw editor from the fresh ITEMS
-  }else{
-    toast('שגיאה: '+((res&&res.error)||'שמירה נכשלה'));  // keep draft for retry
+  // 5. POST the whole table — show a clear "saving…" state on the button so the
+  //    admin sees it's working and doesn't tap again (the request can take a sec).
+  const btn=$('#itemsSave'); const label=btn.innerHTML;
+  btn.disabled=true; btn.innerHTML='<span class="spin"></span> שומר…';
+  try{
+    const res=await apiPost({action:'saveItems',items:items});
+    if(res && res.ok){
+      toast('הפריטים נשמרו ✓');
+      itemsDraft=null;            // clear so next open re-clones from updated ITEMS
+      await refresh();            // re-pull -> buildItems -> live grid updated
+      renderItemsEditor();        // redraw editor from the fresh ITEMS
+    }else{
+      toast('שגיאה: '+((res&&res.error)||'שמירה נכשלה'));  // keep draft for retry
+    }
+  }catch(e){
+    toast('שגיאה: אין חיבור — נסו שוב');   // keep draft for retry
+  }finally{
+    btn.disabled=false; btn.innerHTML=label;
   }
 }
 function itemsCancel(){ itemsDraft=null; showView('live'); }
