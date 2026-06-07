@@ -147,6 +147,16 @@
   .gate .glock{font-size:2.4rem;}
   .gate .gtitle{font-size:1.15rem;font-weight:700;}
   .gate .gsub{color:var(--muted);font-size:.9rem;}
+  /* Honest load gate: covers the app until the first data load (phase 1) lands,
+     so nothing behind it is tappable on empty/untrusted STATE. Below the passcode
+     gate (z-index 65) so a bad code still raises the passcode sheet on top. */
+  .syncwrap{position:fixed;inset:0;background:var(--bg);z-index:60;display:none;
+    flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:24px;}
+  .syncwrap.show{display:flex;}
+  .syncwrap .sbig{width:34px;height:34px;border:3px solid var(--line);border-top-color:var(--accent);
+    border-radius:50%;animation:rot .7s linear infinite;}
+  .syncwrap .stitle{font-size:1.1rem;font-weight:700;}
+  body.dev .syncwrap{outline:4px solid #c0392b;outline-offset:-4px;}
 
   /* History list */
   .hsession{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px;margin-bottom:12px;box-shadow:var(--shadow);}
@@ -210,6 +220,11 @@
   <div class="glock">🔒</div>
   <div class="gtitle">נדרש קוד כניסה</div>
   <div class="gsub">הזינו את הקוד המשותף כדי לגשת ליומן.</div>
+</div>
+<!-- Honest load gate: shown after the passcode passes, until the first data load lands. -->
+<div class="syncwrap" id="syncOverlay">
+  <div class="sbig"></div>
+  <div class="stitle" id="syncMsg">מסנכרן את המצב העדכני…</div>
 </div>
 <div class="app">
   <header>
@@ -388,6 +403,17 @@ let noteSubs = [];              // sub-item labels selected in the note sheet
 let retroSubs = [];             // sub-item labels selected for the next retro item
 let itemsDraft = null;          // admin working copy of ITEMS while editing the items tab
 
+/* ---------- data window tuning ----------
+   Code constants (not Sheet-read) so they're fast and changeable by editing +
+   reloading. Only the on/off feature flag (WINDOWING_ENABLED) lives in the Sheet.
+   The backend returns everything if its flag is off or it's the old version, so
+   these are safe upper bounds the frontend ASKS for, not hard guarantees. */
+const BOOT_SESSIONS = 2;        // phase-1: N newest sessions for instant interactivity
+const LIVE_DAYS     = 3;        // phase-2 + ongoing sync window (by session START)
+const HIST_DAYS     = 30;       // History tab window (by session START)
+let loaded = false;             // false until phase-1 lands; gates the honest load overlay
+let phase2Pending = false;      // true between phase-1 and phase-2 (shows "loading earlier slots…")
+
 /* ---------- live sync tuning ---------- */
 const POLL_MS = 5000;           // how often to cheaply check for changes (easy to change)
 const FULL_MS = 60000;          // safety-net full refresh, in case a fingerprint edge case is missed
@@ -426,8 +452,17 @@ function dropTmp(ids){
 }
 
 /* ---------- API ---------- */
-async function apiGet(){
-  const r = await fetch(API_URL + '?code=' + encodeURIComponent(passcode)); return r.json();
+/* GET state. Optional window params (honored only when the backend flag is on;
+   an old/flag-off backend ignores them and returns everything — graceful
+   degradation): {sessions:N} -> N newest sessions, {days:K} -> last K days.
+   No params -> full dataset (today's behavior). */
+async function apiGet(params){
+  let url = API_URL + '?code=' + encodeURIComponent(passcode);
+  if(params){
+    if(params.sessions!=null) url += '&sessions=' + encodeURIComponent(params.sessions);
+    if(params.days!=null)     url += '&days='     + encodeURIComponent(params.days);
+  }
+  const r = await fetch(url); return r.json();
 }
 async function apiPost(payload){
   // text/plain avoids CORS preflight with Apps Script
@@ -445,23 +480,78 @@ async function apiPing(){
     body:JSON.stringify({action:'ping',code:passcode})});
   return r.json();
 }
+/* Ongoing full-refresh used by ping / safety-net / manual 🔄. Pulls the LIVE_DAYS
+   window (the backend returns everything if its flag is off / it's old). Seeds
+   lastFp from the SERVER fingerprint (data.fp) so a write that landed while this
+   read was in flight is caught on the next ping; falls back to clientFp() only
+   when no fp is returned (flag off on an old backend). */
 async function refresh(){
   if(!passcode){ openPass(); return; }
   $('#connState').innerHTML = '<span class="spin"></span> טוען נתונים…';
   try{
-    const data = await apiGet();
+    const data = await apiGet({days: LIVE_DAYS});
     if(data && data.error==='bad_passcode'){
       $('#connState').textContent='🔒 קוד שגוי';
       passcode=''; localStorage.removeItem(LS_PASSCODE); showGate(); return;
     }
     STATE.sessions = data.sessions||[]; STATE.events = data.events||[];
     STATE.items = data.items||[]; ITEMS = buildItems(STATE.items);
-    lastFp = clientFp();   // seed/refresh fingerprint so the next ping won't trigger a redundant full refresh
+    lastFp = (data.fp!=null) ? data.fp : clientFp();   // prefer server fp (avoids the in-flight-write race)
+    phase2Pending = false;   // a full live-window pull supersedes phase 2 (heals a failed phase 2)
     $('#connState').textContent = 'מחובר · עודכן ' + new Date().toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit'});
     render();
   }catch(e){
     $('#connState').textContent = '⚠️ אין חיבור — בדקו את כתובת ה-API';
   }
+}
+
+/* ---------- honest load gate + two-phase boot ----------
+   Until phase 1 lands we cannot trust empty STATE (asleep/no-items vs not-loaded-
+   yet), so the overlay blocks the whole app. Phase 1 pulls the N newest sessions
+   (always incl. the open one) for instant interactivity on the active slot; phase
+   2 fills in the rest of the live window in the background. Only then does
+   startSync() begin (its first ping catches anything written during phase 2). */
+function showSyncOverlay(msg){ $('#syncMsg').textContent = msg || 'מסנכרן את המצב העדכני…'; $('#syncOverlay').classList.add('show'); }
+function hideSyncOverlay(){ $('#syncOverlay').classList.remove('show'); }
+
+async function boot(){
+  if(!passcode){ openPass(); return; }
+  showSyncOverlay('מסנכרן את המצב העדכני…');
+  // Phase 1 — block until the N newest sessions land. Retry on connection failure.
+  while(!loaded){
+    try{
+      const d1 = await apiGet({sessions: BOOT_SESSIONS});
+      if(d1 && d1.error==='bad_passcode'){
+        hideSyncOverlay();
+        passcode=''; localStorage.removeItem(LS_PASSCODE); showGate(); return;
+      }
+      if(!d1 || d1.ok===false) throw new Error('bad phase-1 response');
+      STATE.sessions = d1.sessions||[]; STATE.events = d1.events||[];
+      STATE.items = d1.items||[]; ITEMS = buildItems(STATE.items);
+      loaded = true; phase2Pending = true;
+      $('#connState').textContent = 'מחובר · עודכן ' + new Date().toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit'});
+      render();
+      hideSyncOverlay();
+    }catch(e){
+      showSyncOverlay('אין חיבור — מנסה שוב…');
+      await new Promise(r=>setTimeout(r, 1500));
+    }
+  }
+  // Phase 2 (background) — pull the full live window, replace STATE wholesale,
+  // seed lastFp from the server fp, drop the "loading earlier slots…" row. On
+  // failure leave the row up and retry once; startSync()'s safety net heals the rest.
+  try{
+    const d2 = await apiGet({days: LIVE_DAYS});
+    if(d2 && d2.ok!==false && !d2.error){
+      STATE.sessions = d2.sessions||[]; STATE.events = d2.events||[];
+      STATE.items = d2.items||[]; ITEMS = buildItems(STATE.items);
+      lastFp = (d2.fp!=null) ? d2.fp : clientFp();
+      phase2Pending = false; render();
+    }
+  }catch(e){ /* phase-2 failure is non-fatal: row stays, safety net heals it */ }
+  // Start syncing regardless — the first ping (and 60s safety net) catch any
+  // write that landed during phase 2, and heal a still-pending phase 2.
+  startSync();
 }
 
 /* Mirror of the backend fingerprint_(): "<sessionsLastRow>.<eventsLastRow>.<latestStamp>".
@@ -518,12 +608,15 @@ function renderSlotSelect(){
   if(!selectedSlot || !STATE.sessions.find(s=>s.id===selectedSlot)){
     selectedSlot = op ? op.id : (sorted[0]? sorted[0].id : null);
   }
-  if(sorted.length===0){ $('#slotBar').classList.add('hidden'); $('#targetBox').style.display='none'; return; }
-  sel.innerHTML = sorted.map(s=>{
+  if(sorted.length===0 && !phase2Pending){ $('#slotBar').classList.add('hidden'); $('#targetBox').style.display='none'; return; }
+  let html = sorted.map(s=>{
     const label = (s.end? fmtTime(s.start)+' – '+fmtHM(s.end) : fmtTime(s.start)+' · פעיל')
       + (s.caregiver? ' · '+s.caregiver:'');
     return `<option value="${s.id}" ${s.id===selectedSlot?'selected':''}>${label}</option>`;
   }).join('');
+  // While phase 2 is still loading earlier slots, signpost it with a disabled row.
+  if(phase2Pending) html += `<option value="" disabled>טוען מקטעים קודמים…</option>`;
+  sel.innerHTML = html;
   renderTarget();
 }
 
@@ -562,11 +655,29 @@ function renderGrid(){
   else note.classList.add('hidden');
 }
 
+/* ---------- history tab (own wider window) ----------
+   History loads HIST_DAYS (its own, heavier window) decoupled from the live tab,
+   into HIST. renderHistory() renders from HIST once it's been loaded, else falls
+   back to STATE (so the list isn't empty before the first History open). */
+let HIST = null;                  // {sessions, events} once History has been fetched
+let histLoading = false;
+function histSessionsSorted(){ const src = HIST ? HIST.sessions : STATE.sessions; return [...src].sort((a,b)=>new Date(b.start)-new Date(a.start)); }
+function histEventsFor(id){ const src = HIST ? HIST.events : STATE.events; return src.filter(e=>e.sessionId===id); }
+async function loadHistory(){
+  if(!passcode) return;
+  histLoading = true; renderHistory();
+  try{
+    const d = await apiGet({days: HIST_DAYS});
+    if(d && d.ok!==false && !d.error){ HIST = {sessions:d.sessions||[], events:d.events||[]}; }
+  }catch(e){ /* leave prior HIST/STATE fallback; user can re-open to retry */ }
+  histLoading = false; renderHistory();
+}
 function renderHistory(){
-  const list=$('#histList'); const sorted=sessionsSorted();
+  const list=$('#histList'); const sorted=histSessionsSorted();
+  if(histLoading && sorted.length===0){ list.innerHTML='<div class="empty"><span class="spin"></span> טוען היסטוריה…</div>'; return; }
   if(sorted.length===0){ list.innerHTML='<div class="empty">עדיין אין תיעוד.<br>התחילו מ\"סיוון התעוררה\".</div>'; return; }
   list.innerHTML = sorted.map(s=>{
-    const evs = eventsFor(s.id).sort((a,b)=>new Date(a.reportedAt)-new Date(b.reportedAt));
+    const evs = histEventsFor(s.id).sort((a,b)=>new Date(a.reportedAt)-new Date(b.reportedAt));
     const closedTag = s.end ? (s.closedBy==='auto'
         ? '<span class="tag auto">לא נסגר ע״י המשתמש</span>'
         : '<span class="tag">נסגר</span>')
@@ -906,7 +1017,7 @@ async function savePass(){
   localStorage.setItem(LS_PASSCODE,v);
   setRole(!!ping.admin);
   hideGate(); closeSheets();
-  await refresh(); startSync();
+  boot();   // two-phase load (overlay → phase 1 → phase 2 → startSync)
   if(!caregiver) setTimeout(openName,300);
 }
 
@@ -976,7 +1087,7 @@ $('#nameSave').onclick=saveName;
 $('#logoutBtn').onclick=doLogout;
 $('#passSave').onclick=savePass;
 $('#navLive').onclick=()=>showView('live');
-$('#navHist').onclick=()=>{showView('hist');renderHistory();};
+$('#navHist').onclick=()=>{showView('hist');loadHistory();};
 $('#navRetro').onclick=openRetro;
 /* Manual refresh: spin the 🔄 icon so a tap gives visible feedback (auto-sync already keeps
    things live; this is an on-demand "pull now" + reassurance for caregivers). */
@@ -1006,8 +1117,7 @@ if(API_URL.startsWith('PASTE')){
 }else if(!passcode){
   showGate();              // no code on this device -> hard lock, ask for it
 }else{
-  refresh();               // a bad_passcode response will raise the gate
-  startSync();
+  boot();                  // two-phase load; a bad_passcode response raises the gate
   if(!caregiver) setTimeout(openName,400);
 }
 </script>
