@@ -170,6 +170,13 @@
   .hbrow{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);
     border-radius:12px;padding:8px 10px;margin-bottom:6px;font-size:.85rem;}
   .hbrow .x{color:var(--badge);font-weight:700;cursor:pointer;font-size:1.1rem;padding:0 4px;}
+
+  /* DEV environment marker — only shown on the /dev/ build (set in JS). */
+  .envbadge{display:none;align-self:center;background:#c0392b;color:#fff;font-weight:800;
+    font-size:.72rem;letter-spacing:.5px;padding:4px 9px;border-radius:999px;white-space:nowrap;}
+  body.dev .envbadge{display:inline-block;}
+  body.dev{--accent:#c0392b;}                 /* tint the dev build so it never reads as prod */
+  body.dev .gate{outline:4px solid #c0392b;outline-offset:-4px;}
 </style>
 </head>
 <body>
@@ -182,9 +189,10 @@
 <div class="app">
   <header>
     <div>
-      <h1 class="display">יומן הערות של סיוון</h1>
+      <h1 class="display" id="appTitle">יומן הערות של סיוון</h1>
       <div class="sub" id="connState">מתחבר…</div>
     </div>
+    <span class="envbadge" id="envBadge">🛠️ סביבת בדיקות DEV</span>
     <div class="who" id="whoBtn"><span>👤</span><span id="whoName">מתעד.ת</span></div>
   </header>
 
@@ -308,6 +316,14 @@ let STATE = { sessions: [], events: [] };
 const ENV_NS = location.pathname.includes('/dev') ? 'dev' : 'prod';
 const LS_CAREGIVER = 'sivan_caregiver_' + ENV_NS;
 const LS_PASSCODE  = 'sivan_passcode_'  + ENV_NS;
+/* Make the DEV environment unmistakable: red badge, red accent tint, [DEV] tab title,
+   and a DEV marker on the gate. Prod is left exactly as-is. */
+if(ENV_NS==='dev'){
+  document.body.classList.add('dev');
+  document.title = '[DEV] ' + document.title;
+  const t=document.getElementById('appTitle'); if(t) t.textContent='🛠️ '+t.textContent+' — DEV';
+  const g=document.querySelector('.gtitle'); if(g) g.textContent='🛠️ סביבת בדיקות (DEV) — '+g.textContent;
+}
 let caregiver = localStorage.getItem(LS_CAREGIVER) || '';
 let passcode = localStorage.getItem(LS_PASSCODE) || '';
 let selectedSlot = null;        // sessionId the live view reports into
