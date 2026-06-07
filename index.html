@@ -266,7 +266,7 @@
 <div class="sheet" id="passSheet">
   <div class="grab"></div>
   <h2>🔒 קוד כניסה</h2>
-  <div class="h-sub">הזינו את הקוד המשותף כדי לגשת ליומן. הקוד יישמר במכשיר.</div>
+  <div class="h-sub">הזינו את קוד הכניסה כדי לגשת ליומן. הקוד יישמר במכשיר. (לניהול — הזינו את קוד המנהל.)</div>
   <label class="fld">קוד</label>
   <input type="text" inputmode="numeric" id="passInput" placeholder="••••">
   <button class="primary" id="passSave">כניסה</button>
@@ -337,6 +337,7 @@ let STATE = { sessions: [], events: [], items: [] };
 const ENV_NS = location.pathname.includes('/dev') ? 'dev' : 'prod';
 const LS_CAREGIVER = 'sivan_caregiver_' + ENV_NS;
 const LS_PASSCODE  = 'sivan_passcode_'  + ENV_NS;
+const LS_ROLE      = 'sivan_role_'      + ENV_NS;   // 'admin' | 'user' — confirmed by backend
 /* Make the DEV environment unmistakable: red badge, red accent tint, [DEV] tab title,
    and a DEV marker on the gate. Prod is left exactly as-is. */
 if(ENV_NS==='dev'){
@@ -347,6 +348,11 @@ if(ENV_NS==='dev'){
 }
 let caregiver = localStorage.getItem(LS_CAREGIVER) || '';
 let passcode = localStorage.getItem(LS_PASSCODE) || '';
+/* Admin-only features (History tab) are gated by this flag. It is seeded from
+   localStorage for an instant UI on load, but ALWAYS re-confirmed by the
+   backend (the `ping` reply's `admin` flag) — tampering with localStorage can't
+   unlock History because every ping overwrites it with the server's verdict. */
+let isAdmin = localStorage.getItem(LS_ROLE) === 'admin';
 let selectedSlot = null;        // sessionId the live view reports into
 let pendingItem = null;         // item awaiting note in the sheet
 let retroEvents = [];           // events being built in retro sheet
@@ -660,7 +666,11 @@ function startSync(){
     if(refreshBlocked()) return;
     try{
       const p = await apiPing();
-      if(p && p.ok && p.fp !== lastFp){ if(refreshBlocked()) return; await refresh(); }
+      if(p && p.ok){
+        // Re-confirm role from the backend; corrects the UI if the code's role changed.
+        if(!!p.admin !== isAdmin) setRole(!!p.admin);
+        if(p.fp !== lastFp){ if(refreshBlocked()) return; await refresh(); }
+      }
     }catch(e){ /* transient; next tick retries */ }
   }, POLL_MS);
   // Safety net: occasional full refresh self-heals any missed fingerprint edge case.
@@ -693,8 +703,9 @@ async function savePass(){
     $('#connState').textContent='🔒 קוד שגוי';
     passcode=''; toast('קוד שגוי'); return;   // stay gated, sheet stays open
   }
-  // accepted
+  // accepted — `ping` also tells us whether this is the admin code (server-side)
   localStorage.setItem(LS_PASSCODE,v);
+  setRole(!!ping.admin);
   hideGate(); closeSheets();
   await refresh(); startSync();
   if(!caregiver) setTimeout(openName,300);
@@ -712,6 +723,7 @@ function doLogout(){
   if(!confirm('להתנתק? יהיה צורך להזין שוב קוד כניסה ושם.')) return;
   localStorage.removeItem(LS_CAREGIVER);
   localStorage.removeItem(LS_PASSCODE);
+  localStorage.removeItem(LS_ROLE);
   location.reload();
 }
 
@@ -728,6 +740,24 @@ function showView(which){
   $('#histView').classList.toggle('hidden',which!=='hist');
   $('#navLive').classList.toggle('active',which==='live');
   $('#navHist').classList.toggle('active',which==='hist');
+}
+
+/* ---------- role (admin vs user) ----------
+   The History tab is admin-only. setRole() records the backend-confirmed role
+   (persisted per-env) and applyRole() reflects it in the UI: it shows/hides the
+   📚 History nav button and, if a non-admin is somehow on the History view,
+   bounces them back to the live view. */
+function setRole(admin){
+  isAdmin = !!admin;
+  localStorage.setItem(LS_ROLE, isAdmin ? 'admin' : 'user');
+  applyRole();
+}
+function applyRole(){
+  const hist = $('#navHist');
+  if(hist) hist.classList.toggle('hidden', !isAdmin);
+  // If a non-admin is currently viewing history (e.g. role was just downgraded),
+  // send them back to the live view.
+  if(!isAdmin && !$('#histView').classList.contains('hidden')) showView('live');
 }
 
 /* ---------- wire up ---------- */
@@ -758,6 +788,7 @@ $('#retroSave').onclick=saveRetro;
 $('#retroCancel').onclick=closeSheets;
 
 /* ---------- init ---------- */
+applyRole();   // hide History for non-admins immediately; ping re-confirms role
 if(API_URL.startsWith('PASTE')){
   $('#connState').textContent='⚠️ הדביקו את כתובת ה-API בקובץ';
 }else if(!passcode){
