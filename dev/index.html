@@ -392,7 +392,8 @@ const POLL_MS = 5000;           // how often to cheaply check for changes (easy 
 const FULL_MS = 60000;          // safety-net full refresh, in case a fingerprint edge case is missed
 const TYPING_GRACE_MS = 4000;   // suppress auto-refresh for this long after the last keystroke
 let lastFp = null;              // last seen backend fingerprint (seeded on first refresh)
-let postInFlight = false;       // true while an apiPost() request is being sent
+let postsInFlight = 0;          // count of apiPost() requests currently being sent (>=1 blocks auto-refresh)
+let tmpSeq = 0;                 // monotonic counter for optimistic (client-side) row ids
 let lastTypeAt = 0;             // timestamp (ms) of the last input keystroke
 
 /* ---------- helpers ---------- */
@@ -408,6 +409,21 @@ function inputToIso(v){ return v ? new Date(v).toISOString() : ''; }
 function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show');
   clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'),2200); }
 
+/* ---------- optimistic UI ----------
+   Item taps / retro writes update STATE locally and re-render immediately, then POST in
+   the background. Each optimistic row carries a unique tmp id so a failed save reverts
+   ONLY that row (surgical filter-by-id) — fast multi-tapping stays correct. We deliberately
+   do NOT reseed lastFp here: the backend write bumps the backend fingerprint, so the next
+   ping sees p.fp !== lastFp and pulls a full refresh that replaces STATE wholesale —
+   temp rows are swapped for authoritative server rows, no duplicates. */
+function tmpId(){ return 'tmp_' + (++tmpSeq); }
+/* Remove a set of optimistic rows by id (used on save failure to roll back). */
+function dropTmp(ids){
+  const set = new Set(ids);
+  STATE.events   = STATE.events.filter(e=>!set.has(e.id));
+  STATE.sessions = STATE.sessions.filter(s=>!set.has(s.id));
+}
+
 /* ---------- API ---------- */
 async function apiGet(){
   const r = await fetch(API_URL + '?code=' + encodeURIComponent(passcode)); return r.json();
@@ -415,12 +431,12 @@ async function apiGet(){
 async function apiPost(payload){
   // text/plain avoids CORS preflight with Apps Script
   payload.code = passcode;
-  postInFlight = true;
+  postsInFlight++;
   try{
     const r = await fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},
       body:JSON.stringify(payload)});
     return r.json();
-  } finally { postInFlight = false; }
+  } finally { postsInFlight--; }
 }
 /* Cheap change-check: POST {action:'ping'} -> tiny fingerprint string. */
 async function apiPing(){
@@ -680,18 +696,29 @@ function itemsCancel(){ itemsDraft=null; showView('live'); }
 async function doWake(){
   if(!caregiver){ openName(); return; }
   $('#wakeBtn').disabled=true;
-  const res=await apiPost({action:'openSession',caregiver:caregiver,start:new Date().toISOString()});
+  const start=new Date().toISOString();
+  const res=await apiPost({action:'openSession',caregiver:caregiver,start:start});
   $('#wakeBtn').disabled=false;
-  if(res.ok){ selectedSlot=res.sessionId; toast('מקטע חדש נפתח ☀️'); await refresh(); }
-  else toast('שגיאה: '+res.error);
+  if(res.ok){
+    // Snappy: reflect the new state locally (auto-close any open one, add the new session)
+    // instead of a second full refresh. The ping loop reconciles to authoritative rows.
+    const prev=openSession(); if(prev){ prev.end=start; prev.closedBy='auto'; }
+    STATE.sessions.push({id:res.sessionId,caregiver:caregiver,start:start,end:'',closedBy:'',createdAt:start});
+    selectedSlot=res.sessionId; render();
+    toast('מקטע חדש נפתח ☀️');
+  } else toast('שגיאה: '+res.error);
 }
 async function doSleep(){
   const op=openSession(); if(!op) return;
   $('#sleepBtn').disabled=true;
-  const res=await apiPost({action:'closeSession',sessionId:op.id,end:new Date().toISOString()});
+  const end=new Date().toISOString();
+  const res=await apiPost({action:'closeSession',sessionId:op.id,end:end});
   $('#sleepBtn').disabled=false;
-  if(res.ok){ toast('המקטע נסגר 🌙'); await refresh(); }
-  else toast('שגיאה: '+res.error);
+  if(res.ok){
+    // Snappy: close the session locally instead of a second full refresh; ping reconciles.
+    op.end=end; op.closedBy='user'; render();
+    toast('המקטע נסגר 🌙');
+  } else toast('שגיאה: '+res.error);
 }
 
 /* Render sub-item chips for `item` into `container`, toggling labels in/out of
@@ -733,11 +760,28 @@ async function saveNote(){
   const key=pendingItem; if(!key) return;
   if(!caregiver){ openName(); return; }   // ensure every event records who logged it
   const subs=noteSubs.join(', ');
+  const note=$('#noteText').value.trim();
+  const slot=selectedSlot;
+  const payload={action:'addEvent',sessionId:slot,itemType:key,
+    note:note,reportedAt:inputToIso($('#noteTime').value),caregiver:caregiver,subItems:subs};
   closeSheets();
-  const res=await apiPost({action:'addEvent',sessionId:selectedSlot,itemType:key,
-    note:$('#noteText').value.trim(),reportedAt:inputToIso($('#noteTime').value),
-    caregiver:caregiver,subItems:subs});
-  if(res.ok){ toast('נשמר ✓'); await refresh(); } else toast('שגיאה: '+res.error);
+  // Optimistic: add the event locally and show feedback immediately, then POST in background.
+  const id=tmpId();
+  STATE.events.push({id:id,sessionId:slot,itemType:key,note:note,
+    reportedAt:payload.reportedAt,caregiver:caregiver,subItems:subs});
+  render();
+  toast('נשמר ✓');
+  postOptimistic(payload, [id], itemName(key));
+}
+/* Fire a write in the background. On failure, roll back the given optimistic ids and show a
+   named error so the caregiver knows WHICH item didn't save (matters when tapping fast). */
+async function postOptimistic(payload, tmpIds, label){
+  let res;
+  try{ res = await apiPost(payload); }
+  catch(e){ res = {ok:false, error:'no_connection'}; }
+  if(res && res.ok) return;                       // ping loop will reconcile to authoritative rows
+  dropTmp(tmpIds); render();
+  toast('שגיאה — ' + (label||'הדיווח') + ' לא נשמר, נסו שוב');
 }
 
 /* ---------- retro ---------- */
@@ -774,12 +818,21 @@ function renderRetroItems(){
 }
 async function saveRetro(){
   if(!caregiver){ openName(); return; }
-  const payload={action:'addHistoric',caregiver:caregiver,
-    start:inputToIso($('#retroStart').value),end:inputToIso($('#retroEnd').value),
-    events:retroEvents.map(e=>({itemType:e.itemType,note:e.note,subItems:e.subItems||'',reportedAt:inputToIso($('#retroStart').value)}))};
+  const start=inputToIso($('#retroStart').value), end=inputToIso($('#retroEnd').value);
+  const evs=retroEvents.map(e=>({itemType:e.itemType,note:e.note,subItems:e.subItems||'',reportedAt:start}));
+  const payload={action:'addHistoric',caregiver:caregiver,start:start,end:end,events:evs};
   closeSheets();
-  const res=await apiPost(payload);
-  if(res.ok){ toast('מקטע היסטורי נשמר ✓'); await refresh(); } else toast('שגיאה: '+res.error);
+  // Optimistic: add a temp session + its events (all under one batch of tmp ids), show feedback,
+  // then POST in background. On failure the whole batch (session + events) is rolled back together.
+  const sid=tmpId();
+  const ids=[sid];
+  STATE.sessions.push({id:sid,caregiver:caregiver,start:start,end:end,closedBy:'user',createdAt:start});
+  evs.forEach(e=>{ const eid=tmpId(); ids.push(eid);
+    STATE.events.push({id:eid,sessionId:sid,itemType:e.itemType,note:e.note,
+      reportedAt:e.reportedAt,caregiver:caregiver,subItems:e.subItems}); });
+  render();
+  toast('מקטע היסטורי נשמר ✓');
+  postOptimistic(payload, ids, 'המקטע ההיסטורי');
 }
 
 /* Don't auto-refresh while the user is mid-edit: a sheet is open, a save is in
@@ -788,7 +841,7 @@ async function saveRetro(){
 function refreshBlocked(){
   if(!passcode) return true;
   if($('#scrim').classList.contains('show')) return true;        // a bottom sheet is open
-  if(postInFlight) return true;                                  // a save/open/close is being sent
+  if(postsInFlight>0) return true;                              // a save/open/close is being sent
   if(Date.now() - lastTypeAt < TYPING_GRACE_MS) return true;     // typed very recently
   return false;
 }
