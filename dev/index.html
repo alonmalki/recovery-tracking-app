@@ -302,8 +302,14 @@ const ITEMS = [
 
 /* ---------- state ---------- */
 let STATE = { sessions: [], events: [] };
-let caregiver = localStorage.getItem('sivan_caregiver') || '';
-let passcode = localStorage.getItem('sivan_passcode') || '';
+/* localStorage is per-ORIGIN (shared across paths), and dev (/dev/) lives on the
+   same origin as prod (/). Namespace the saved credentials by environment so a
+   login in one doesn't leak into the other. Dev is detected by the URL path. */
+const ENV_NS = location.pathname.includes('/dev') ? 'dev' : 'prod';
+const LS_CAREGIVER = 'sivan_caregiver_' + ENV_NS;
+const LS_PASSCODE  = 'sivan_passcode_'  + ENV_NS;
+let caregiver = localStorage.getItem(LS_CAREGIVER) || '';
+let passcode = localStorage.getItem(LS_PASSCODE) || '';
 let selectedSlot = null;        // sessionId the live view reports into
 let pendingItem = null;         // item awaiting note in the sheet
 let retroEvents = [];           // events being built in retro sheet
@@ -356,7 +362,7 @@ async function refresh(){
     const data = await apiGet();
     if(data && data.error==='bad_passcode'){
       $('#connState').textContent='🔒 קוד שגוי';
-      passcode=''; localStorage.removeItem('sivan_passcode'); showGate(); return;
+      passcode=''; localStorage.removeItem(LS_PASSCODE); showGate(); return;
     }
     STATE.sessions = data.sessions||[]; STATE.events = data.events||[];
     lastFp = clientFp();   // seed/refresh fingerprint so the next ping won't trigger a redundant full refresh
@@ -604,7 +610,7 @@ async function savePass(){
     passcode=''; toast('קוד שגוי'); return;   // stay gated, sheet stays open
   }
   // accepted
-  localStorage.setItem('sivan_passcode',v);
+  localStorage.setItem(LS_PASSCODE,v);
   hideGate(); closeSheets();
   await refresh(); startSync();
   if(!caregiver) setTimeout(openName,300);
@@ -614,14 +620,14 @@ async function savePass(){
 function openName(){ $('#nameInput').value=caregiver; showSheet('nameSheet'); }
 function saveName(){
   const v=$('#nameInput').value.trim(); if(!v){ toast('נא להזין שם'); return; }
-  caregiver=v; localStorage.setItem('sivan_caregiver',v); closeSheets(); render(); toast('שלום '+v+' 👋');
+  caregiver=v; localStorage.setItem(LS_CAREGIVER,v); closeSheets(); render(); toast('שלום '+v+' 👋');
 }
 /* Logout: forget name + passcode on this device and reload. Next visit must
    re-enter the passcode (hard gate) and then the name. */
 function doLogout(){
   if(!confirm('להתנתק? יהיה צורך להזין שוב קוד כניסה ושם.')) return;
-  localStorage.removeItem('sivan_caregiver');
-  localStorage.removeItem('sivan_passcode');
+  localStorage.removeItem(LS_CAREGIVER);
+  localStorage.removeItem(LS_PASSCODE);
   location.reload();
 }
 
