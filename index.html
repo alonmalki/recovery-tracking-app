@@ -136,6 +136,17 @@
   .primary:active{transform:scale(.99);}
   .ghost{width:100%;margin-top:8px;background:none;border:none;color:var(--muted);font-family:'Heebo';
     font-size:.9rem;padding:10px;cursor:pointer;}
+  .ghost.danger{color:#c0392b;font-weight:600;}
+
+  /* Full-screen lock shown until a valid passcode is entered. Sits ABOVE app
+     content/nav (z-index 65) but BELOW the scrim (70) and passcode sheet (80),
+     so only the passcode sheet is reachable while locked. */
+  .gate{position:fixed;inset:0;background:var(--bg);z-index:65;display:none;
+    flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;padding:24px;}
+  .gate.show{display:flex;}
+  .gate .glock{font-size:2.4rem;}
+  .gate .gtitle{font-size:1.15rem;font-weight:700;}
+  .gate .gsub{color:var(--muted);font-size:.9rem;}
 
   /* History list */
   .hsession{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px;margin-bottom:12px;box-shadow:var(--shadow);}
@@ -162,6 +173,12 @@
 </style>
 </head>
 <body>
+<!-- Full-screen lock: covers the whole app until a valid passcode is entered. -->
+<div class="gate" id="gate">
+  <div class="glock">🔒</div>
+  <div class="gtitle">נדרש קוד כניסה</div>
+  <div class="gsub">הזינו את הקוד המשותף כדי לגשת ליומן.</div>
+</div>
 <div class="app">
   <header>
     <div>
@@ -244,6 +261,7 @@
   <label class="fld">שם המתעד.ת</label>
   <input type="text" id="nameInput" placeholder="לדוגמה: דנה">
   <button class="primary" id="nameSave">שמירה</button>
+  <button class="ghost danger" id="logoutBtn">התנתקות (החלפת משתמש.ת)</button>
 </div>
 
 <!-- Retro (historic) sheet -->
@@ -338,7 +356,7 @@ async function refresh(){
     const data = await apiGet();
     if(data && data.error==='bad_passcode'){
       $('#connState').textContent='🔒 קוד שגוי';
-      passcode=''; localStorage.removeItem('sivan_passcode'); openPass(); return;
+      passcode=''; localStorage.removeItem('sivan_passcode'); showGate(); return;
     }
     STATE.sessions = data.sessions||[]; STATE.events = data.events||[];
     lastFp = clientFp();   // seed/refresh fingerprint so the next ping won't trigger a redundant full refresh
@@ -559,11 +577,35 @@ function startSync(){
   setInterval(()=>{ if(!refreshBlocked()) refresh(); }, FULL_MS);
 }
 
-/* ---------- passcode ---------- */
+/* ---------- passcode gate ----------
+   While gated, the whole app is covered and ONLY the passcode sheet is reachable:
+   no scrim-tap close, no advancing to the name prompt, until a correct code is in. */
+let gated=false;
+function showGate(){
+  gated=true;
+  $('#gate').classList.add('show');
+  openPass();
+}
+function hideGate(){
+  gated=false;
+  $('#gate').classList.remove('show');
+}
 function openPass(){ $('#passInput').value=passcode; showSheet('passSheet'); }
 async function savePass(){
   const v=$('#passInput').value.trim(); if(!v){ toast('נא להזין קוד'); return; }
-  passcode=v; localStorage.setItem('sivan_passcode',v); closeSheets();
+  // Validate against the backend BEFORE letting the user past the gate.
+  // apiPing() uses the live `passcode`, so set it first, then check.
+  $('#connState').innerHTML = '<span class="spin"></span> בודק קוד…';
+  passcode=v;
+  let ping; try{ ping = await apiPing(); }catch(e){ ping=null; }
+  if(!ping){ $('#connState').textContent='⚠️ אין חיבור — נסו שוב'; passcode=''; return; }
+  if(ping.error==='bad_passcode' || !ping.ok){
+    $('#connState').textContent='🔒 קוד שגוי';
+    passcode=''; toast('קוד שגוי'); return;   // stay gated, sheet stays open
+  }
+  // accepted
+  localStorage.setItem('sivan_passcode',v);
+  hideGate(); closeSheets();
   await refresh(); startSync();
   if(!caregiver) setTimeout(openName,300);
 }
@@ -574,10 +616,20 @@ function saveName(){
   const v=$('#nameInput').value.trim(); if(!v){ toast('נא להזין שם'); return; }
   caregiver=v; localStorage.setItem('sivan_caregiver',v); closeSheets(); render(); toast('שלום '+v+' 👋');
 }
+/* Logout: forget name + passcode on this device and reload. Next visit must
+   re-enter the passcode (hard gate) and then the name. */
+function doLogout(){
+  if(!confirm('להתנתק? יהיה צורך להזין שוב קוד כניסה ושם.')) return;
+  localStorage.removeItem('sivan_caregiver');
+  localStorage.removeItem('sivan_passcode');
+  location.reload();
+}
 
 /* ---------- sheets ui ---------- */
 function showSheet(id){ $('#scrim').classList.add('show'); $('#'+id).classList.add('show'); }
-function closeSheets(){ $('#scrim').classList.remove('show');
+function closeSheets(){
+  if(gated) return;   // while locked, the passcode sheet must not be dismissable
+  $('#scrim').classList.remove('show');
   document.querySelectorAll('.sheet').forEach(s=>s.classList.remove('show')); pendingItem=null; }
 
 /* ---------- nav ---------- */
@@ -598,6 +650,7 @@ $('#noteCancel').onclick=closeSheets;
 $('#scrim').onclick=closeSheets;
 $('#whoBtn').onclick=openName;
 $('#nameSave').onclick=saveName;
+$('#logoutBtn').onclick=doLogout;
 $('#passSave').onclick=savePass;
 $('#navLive').onclick=()=>showView('live');
 $('#navHist').onclick=()=>{showView('hist');renderHistory();};
@@ -613,12 +666,12 @@ $('#retroCancel').onclick=closeSheets;
 if(API_URL.startsWith('PASTE')){
   $('#connState').textContent='⚠️ הדביקו את כתובת ה-API בקובץ';
 }else if(!passcode){
-  openPass();
+  showGate();              // no code on this device -> hard lock, ask for it
 }else{
-  refresh();
+  refresh();               // a bad_passcode response will raise the gate
   startSync();
+  if(!caregiver) setTimeout(openName,400);
 }
-if(passcode && !caregiver) setTimeout(openName,400);
 </script>
 </body>
 </html>
