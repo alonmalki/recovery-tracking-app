@@ -178,6 +178,21 @@
     border-radius:12px;padding:8px 10px;margin-bottom:6px;font-size:.85rem;}
   .hbrow .x{color:var(--badge);font-weight:700;cursor:pointer;font-size:1.1rem;padding:0 4px;}
 
+  /* Items editor (admin "ניהול פריטים" tab) */
+  .ie-intro{color:var(--muted);font-size:.85rem;margin:4px 2px 14px;line-height:1.45;}
+  .iecard{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+    padding:14px;margin-bottom:12px;box-shadow:var(--shadow);}
+  .iecard .ietop{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
+  .iecard .iekey{flex:1;font-size:.72rem;color:var(--muted);font-variant-numeric:tabular-nums;
+    word-break:break-all;}
+  .iecard .iebtn{background:none;border:1px solid var(--line);border-radius:10px;font-size:1rem;
+    width:36px;height:34px;cursor:pointer;color:var(--ink);flex:none;line-height:1;}
+  .iecard .iebtn:disabled{opacity:.3;cursor:default;}
+  .iecard .iebtn.del{color:#c0392b;border-color:#eec9c2;}
+  .iecard .iefld{display:block;font-size:.78rem;color:var(--muted);margin:8px 0 4px;font-weight:500;}
+  .iecard .iewide{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:.9rem;cursor:pointer;}
+  .iecard .iewide input{width:18px;height:18px;}
+
   /* DEV environment marker — only shown on the /dev/ build (set in JS). */
   .envbadge{display:none;align-self:center;background:#c0392b;color:#fff;font-weight:800;
     font-size:.72rem;letter-spacing:.5px;padding:4px 9px;border-radius:999px;white-space:nowrap;}
@@ -232,6 +247,15 @@
   <section id="histView" class="hidden">
     <div id="histList"></div>
   </section>
+
+  <!-- ITEMS EDITOR VIEW (admin only) -->
+  <section id="itemsView" class="hidden">
+    <div class="ie-intro">עריכת רשימת הפריטים המוצגים במסך התיעוד החי. ניתן להוסיף, לערוך, לסדר ולמחוק. שמירה מעדכנת את כולם בבת אחת.</div>
+    <div id="itemsList"></div>
+    <button class="primary" id="itemsAdd" style="margin-top:14px;">➕ הוסף פריט</button>
+    <button class="primary" id="itemsSave">💾 שמירה</button>
+    <button class="ghost" id="itemsCancel">ביטול</button>
+  </section>
 </div>
 
 <!-- Bottom nav -->
@@ -240,6 +264,7 @@
   <button id="navHist"><span class="ni">📚</span>היסטוריה</button>
   <button id="navRetro"><span class="ni">⏪</span>תיעוד היסטורי</button>
   <button id="navRefresh"><span class="ni">🔄</span>רענון</button>
+  <button id="navItems"><span class="ni">📝</span>ניהול פריטים</button>
 </nav>
 
 <div class="toast" id="toast"></div>
@@ -358,6 +383,7 @@ let pendingItem = null;         // item awaiting note in the sheet
 let retroEvents = [];           // events being built in retro sheet
 let noteSubs = [];              // sub-item labels selected in the note sheet
 let retroSubs = [];             // sub-item labels selected for the next retro item
+let itemsDraft = null;          // admin working copy of ITEMS while editing the items tab
 
 /* ---------- live sync tuning ---------- */
 const POLL_MS = 5000;           // how often to cheaply check for changes (easy to change)
@@ -540,6 +566,106 @@ function renderHistory(){
       </div>${evHtml}</div>`;
   }).join('');
 }
+
+/* ---------- items editor (admin) ----------
+   Edits a working copy (itemsDraft) of ITEMS, never ITEMS itself. The draft is
+   cloned only when entering the tab (when itemsDraft is null); a background
+   refresh() rebuilds ITEMS but never touches the draft, so in-progress edits
+   survive auto-sync. On save the draft is cleared so the next open re-clones
+   from the now-updated ITEMS. */
+function escAttr(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function renderItemsEditor(){
+  if(itemsDraft===null){
+    // deep-clone current ITEMS into the draft (only on open)
+    itemsDraft = ITEMS.map(it=>({order:it.order,key:it.key,name:it.name,
+      emoji:it.emoji,wide:!!it.wide,subItems:it.subItems.slice()}));
+  }
+  const box=$('#itemsList');
+  box.innerHTML = itemsDraft.map((it,i)=>{
+    const last = i===itemsDraft.length-1;
+    return `<div class="iecard" data-i="${i}">
+      <div class="ietop">
+        <button class="iebtn ie-up" ${i===0?'disabled':''} title="העלה">↑</button>
+        <button class="iebtn ie-down" ${last?'disabled':''} title="הורד">↓</button>
+        <span class="iekey">${it.key?('מפתח: '+escAttr(it.key)):'מפתח: (חדש — ייווצר בשמירה)'}</span>
+        <button class="iebtn del ie-del" title="מחיקה">🗑</button>
+      </div>
+      <label class="iefld">שם</label>
+      <input type="text" class="ie-name" value="${escAttr(it.name)}" placeholder="שם הפריט">
+      <label class="iefld">אימוג'י</label>
+      <input type="text" class="ie-emoji" value="${escAttr(it.emoji)}" placeholder="לדוגמה: 👁️">
+      <label class="iefld">פרטים (מופרדים בפסיק, לא חובה)</label>
+      <input type="text" class="ie-subs" value="${escAttr(it.subItems.join(', '))}" placeholder="פרט א, פרט ב">
+      <label class="iewide"><input type="checkbox" class="ie-wide" ${it.wide?'checked':''}> רוחב מלא (אריח גדול)</label>
+    </div>`;
+  }).join('') || '<div class="empty">אין פריטים. הוסיפו פריט חדש למטה.</div>';
+
+  // bind each card's fields back into the draft entry
+  box.querySelectorAll('.iecard').forEach(card=>{
+    const i=+card.dataset.i;
+    card.querySelector('.ie-name').oninput =e=>itemsDraft[i].name=e.target.value;
+    card.querySelector('.ie-emoji').oninput=e=>itemsDraft[i].emoji=e.target.value;
+    card.querySelector('.ie-subs').oninput =e=>itemsDraft[i].subItems=e.target.value.split(',').map(s=>s.trim()).filter(Boolean);
+    card.querySelector('.ie-wide').onchange=e=>itemsDraft[i].wide=e.target.checked;
+    card.querySelector('.ie-up').onclick  =()=>itemsMove(i,-1);
+    card.querySelector('.ie-down').onclick=()=>itemsMove(i,1);
+    card.querySelector('.ie-del').onclick =()=>itemsDelete(i);
+  });
+}
+function itemsMove(i,dir){
+  const j=i+dir;
+  if(j<0||j>=itemsDraft.length) return;
+  const t=itemsDraft[i]; itemsDraft[i]=itemsDraft[j]; itemsDraft[j]=t;
+  renderItemsEditor();
+}
+function itemsDelete(i){
+  const it=itemsDraft[i];
+  if(!confirm('למחוק את הפריט "'+(it.name||'(ללא שם)')+'"?\n\nתיעוד קודם שנרשם תחת פריט זה יישמר, אך יוצג עם המפתח הגולמי בלבד.')) return;
+  itemsDraft.splice(i,1);
+  renderItemsEditor();
+}
+function itemsAdd(){
+  itemsDraft.push({order:itemsDraft.length,key:'',name:'',emoji:'',wide:false,subItems:[]});
+  renderItemsEditor();
+}
+/* slugify a name client-side so the admin sees a stable key right after save;
+   the backend re-validates uniqueness as defense in depth. */
+function slugifyKey(name){
+  return String(name||'').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'');
+}
+async function itemsSaveDraft(){
+  // 1. validate: every name required (after trim)
+  const draft = itemsDraft.map(it=>({...it,name:(it.name||'').trim()}));
+  if(draft.some(it=>!it.name)){ toast('לכל פריט חייב להיות שם'); return; }
+  // 2/3. assign order by index; generate unique keys for new (keyless) rows
+  const used = {};
+  draft.forEach(it=>{ if(it.key) used[it.key]=true; });
+  const items = draft.map((it,i)=>{
+    let key=it.key;
+    if(!key){
+      let base=slugifyKey(it.name);
+      let cand=base, n=2;
+      while(!cand || used[cand]){ cand = base ? base+'_'+n : ('item_'+Math.random().toString(36).slice(2,8)); n++; }
+      used[cand]=true; key=cand;
+    }
+    return {order:i,key:key,name:it.name,emoji:(it.emoji||'').trim(),
+      wide:!!it.wide,subItems:(it.subItems||[]).map(s=>s.trim()).filter(Boolean).join(', ')};
+  });
+  // 5. POST the whole table
+  $('#itemsSave').disabled=true;
+  const res=await apiPost({action:'saveItems',items:items});
+  $('#itemsSave').disabled=false;
+  if(res && res.ok){
+    toast('הפריטים נשמרו ✓');
+    itemsDraft=null;            // clear so next open re-clones from updated ITEMS
+    await refresh();            // re-pull -> buildItems -> live grid updated
+    renderItemsEditor();        // redraw editor from the fresh ITEMS
+  }else{
+    toast('שגיאה: '+((res&&res.error)||'שמירה נכשלה'));  // keep draft for retry
+  }
+}
+function itemsCancel(){ itemsDraft=null; showView('live'); }
 
 /* ---------- actions ---------- */
 async function doWake(){
@@ -738,8 +864,10 @@ function closeSheets(){
 function showView(which){
   $('#liveView').classList.toggle('hidden',which!=='live');
   $('#histView').classList.toggle('hidden',which!=='hist');
+  $('#itemsView').classList.toggle('hidden',which!=='items');
   $('#navLive').classList.toggle('active',which==='live');
   $('#navHist').classList.toggle('active',which==='hist');
+  $('#navItems').classList.toggle('active',which==='items');
 }
 
 /* ---------- role (admin vs user) ----------
@@ -755,9 +883,11 @@ function setRole(admin){
 function applyRole(){
   const hist = $('#navHist');
   if(hist) hist.classList.toggle('hidden', !isAdmin);
-  // If a non-admin is currently viewing history (e.g. role was just downgraded),
-  // send them back to the live view.
-  if(!isAdmin && !$('#histView').classList.contains('hidden')) showView('live');
+  const items = $('#navItems');
+  if(items) items.classList.toggle('hidden', !isAdmin);
+  // If a non-admin is currently viewing an admin-only view (e.g. role was just
+  // downgraded), send them back to the live view.
+  if(!isAdmin && (!$('#histView').classList.contains('hidden') || !$('#itemsView').classList.contains('hidden'))) showView('live');
 }
 
 /* ---------- wire up ---------- */
@@ -776,6 +906,10 @@ $('#navLive').onclick=()=>showView('live');
 $('#navHist').onclick=()=>{showView('hist');renderHistory();};
 $('#navRetro').onclick=openRetro;
 $('#navRefresh').onclick=refresh;
+$('#navItems').onclick=()=>{showView('items');renderItemsEditor();};
+$('#itemsAdd').onclick=itemsAdd;
+$('#itemsSave').onclick=itemsSaveDraft;
+$('#itemsCancel').onclick=itemsCancel;
 /* Any typing/editing in a field pauses auto-refresh briefly (see refreshBlocked). */
 document.addEventListener('input', ()=>{ lastTypeAt = Date.now(); }, true);
 $('#retroItemType').onchange=retroRefreshChips;
