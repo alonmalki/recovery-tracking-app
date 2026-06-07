@@ -170,6 +170,7 @@
   .spin{display:inline-block;width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--accent);
     border-radius:50%;animation:rot .7s linear infinite;vertical-align:middle;}
   @keyframes rot{to{transform:rotate(360deg);}}
+  .ni.spinning{display:inline-block;animation:rot .7s linear infinite;}
   .pending{font-size:.75rem;color:var(--wake);text-align:center;margin-top:8px;}
   .hidden{display:none !important;}
 
@@ -488,6 +489,9 @@ function countInSlot(id,key){ return STATE.events.filter(e=>e.sessionId===id && 
 function render(){
   const op = openSession();
   const box=$('#statusBox');
+  // reset the big-button labels (clears any leftover in-progress spinner) and re-enable
+  $('#wakeBtn').disabled=false;  $('#wakeBtn').innerHTML='<span class="ico">☀️</span><span>סיוון התעוררה</span>';
+  $('#sleepBtn').disabled=false; $('#sleepBtn').innerHTML='<span class="ico">🌙</span><span>חזרה לישון</span>';
   if(op){
     box.className='status awake';
     $('#statusTitle').textContent='סיוון ערה';
@@ -693,32 +697,39 @@ async function itemsSaveDraft(){
 function itemsCancel(){ itemsDraft=null; showView('live'); }
 
 /* ---------- actions ---------- */
+/* Put a big action button into an in-progress state (spinner + label) while its
+   write is in flight; restore on completion. render() rebuilds the button on success,
+   so we only need to restore the original label on the failure path. */
+function btnBusy(btn, label){
+  btn._html = btn.innerHTML; btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span> ' + label;
+}
+function btnRestore(btn){ btn.disabled = false; if(btn._html!=null) btn.innerHTML = btn._html; }
+
 async function doWake(){
   if(!caregiver){ openName(); return; }
-  $('#wakeBtn').disabled=true;
+  const btn=$('#wakeBtn'); btnBusy(btn,'פותח מקטע…');
   const start=new Date().toISOString();
   const res=await apiPost({action:'openSession',caregiver:caregiver,start:start});
-  $('#wakeBtn').disabled=false;
   if(res.ok){
     // Snappy: reflect the new state locally (auto-close any open one, add the new session)
     // instead of a second full refresh. The ping loop reconciles to authoritative rows.
     const prev=openSession(); if(prev){ prev.end=start; prev.closedBy='auto'; }
     STATE.sessions.push({id:res.sessionId,caregiver:caregiver,start:start,end:'',closedBy:'',createdAt:start});
-    selectedSlot=res.sessionId; render();
+    selectedSlot=res.sessionId; render();   // rebuilds buttons -> shows the now-visible sleep btn
     toast('מקטע חדש נפתח ☀️');
-  } else toast('שגיאה: '+res.error);
+  } else { btnRestore(btn); toast('שגיאה: '+res.error); }
 }
 async function doSleep(){
   const op=openSession(); if(!op) return;
-  $('#sleepBtn').disabled=true;
+  const btn=$('#sleepBtn'); btnBusy(btn,'סוגר מקטע…');
   const end=new Date().toISOString();
   const res=await apiPost({action:'closeSession',sessionId:op.id,end:end});
-  $('#sleepBtn').disabled=false;
   if(res.ok){
     // Snappy: close the session locally instead of a second full refresh; ping reconciles.
-    op.end=end; op.closedBy='user'; render();
+    op.end=end; op.closedBy='user'; render();   // rebuilds buttons -> shows wake btn
     toast('המקטע נסגר 🌙');
-  } else toast('שגיאה: '+res.error);
+  } else { btnRestore(btn); toast('שגיאה: '+res.error); }
 }
 
 /* Render sub-item chips for `item` into `container`, toggling labels in/out of
@@ -967,7 +978,12 @@ $('#passSave').onclick=savePass;
 $('#navLive').onclick=()=>showView('live');
 $('#navHist').onclick=()=>{showView('hist');renderHistory();};
 $('#navRetro').onclick=openRetro;
-$('#navRefresh').onclick=refresh;
+/* Manual refresh: spin the 🔄 icon so a tap gives visible feedback (auto-sync already keeps
+   things live; this is an on-demand "pull now" + reassurance for caregivers). */
+$('#navRefresh').onclick=async ()=>{
+  const ico=$('#navRefresh').querySelector('.ni'); ico.classList.add('spinning');
+  try{ await refresh(); } finally{ ico.classList.remove('spinning'); }
+};
 $('#navItems').onclick=()=>{showView('items');renderItemsEditor();};
 $('#itemsAdd').onclick=itemsAdd;
 $('#itemsSave').onclick=itemsSaveDraft;
