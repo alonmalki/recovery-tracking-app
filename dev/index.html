@@ -137,6 +137,8 @@
   .ghost{width:100%;margin-top:8px;background:none;border:none;color:var(--muted);font-family:'Heebo';
     font-size:.9rem;padding:10px;cursor:pointer;}
   .ghost.danger{color:#c0392b;font-weight:600;}
+  .histctl{display:flex;align-items:center;justify-content:center;gap:14px;margin:8px 0 12px;font-weight:600}
+  .histctl button{min-width:44px}
 
   /* Full-screen lock shown until a valid passcode is entered. Sits ABOVE app
      content/nav (z-index 65) but BELOW the scrim (70) and passcode sheet (80),
@@ -263,6 +265,11 @@
 
   <!-- HISTORY VIEW -->
   <section id="histView" class="hidden">
+    <div class="histctl">
+      <button id="histDaysDown" class="ghost">−</button>
+      <span id="histDaysLabel"></span>
+      <button id="histDaysUp" class="ghost">+</button>
+    </div>
     <div id="histList"></div>
   </section>
 
@@ -410,7 +417,8 @@ let itemsDraft = null;          // admin working copy of ITEMS while editing the
    these are safe upper bounds the frontend ASKS for, not hard guarantees. */
 const BOOT_SESSIONS = 2;        // phase-1: N newest sessions for instant interactivity
 const LIVE_DAYS     = 3;        // phase-2 + ongoing sync window (by session START)
-const HIST_DAYS     = 30;       // History tab window (by session START)
+const HIST_DAYS     = 5;        // History tab DEFAULT window (by session START)
+let histDays = HIST_DAYS;       // current History window; in-memory only (resets to default on reload)
 let loaded = false;             // false until phase-1 lands; gates the honest load overlay
 let phase2Pending = false;      // true between phase-1 and phase-2 (shows "loading earlier slots…")
 
@@ -661,15 +669,20 @@ function renderGrid(){
    back to STATE (so the list isn't empty before the first History open). */
 let HIST = null;                  // {sessions, events} once History has been fetched
 let histLoading = false;
+let histReq = 0;                  // request token: ignore stale stepper fetches (rapid +/- taps)
 function histSessionsSorted(){ const src = HIST ? HIST.sessions : STATE.sessions; return [...src].sort((a,b)=>new Date(b.start)-new Date(a.start)); }
 function histEventsFor(id){ const src = HIST ? HIST.events : STATE.events; return src.filter(e=>e.sessionId===id); }
 async function loadHistory(){
   if(!passcode) return;
+  const my = ++histReq;           // a newer call supersedes this one if histReq advances
   histLoading = true; renderHistory();
   try{
-    const d = await apiGet({days: HIST_DAYS});
+    $('#histDaysLabel').textContent = histDays + ' ימים';
+    const d = await apiGet({days: histDays});
+    if(my !== histReq) return;     // a later stepper tap already fired; drop this stale result
     if(d && d.ok!==false && !d.error){ HIST = {sessions:d.sessions||[], events:d.events||[]}; }
   }catch(e){ /* leave prior HIST/STATE fallback; user can re-open to retry */ }
+  if(my !== histReq) return;
   histLoading = false; renderHistory();
 }
 function renderHistory(){
@@ -793,8 +806,12 @@ async function itemsSaveDraft(){
     const res=await apiPost({action:'saveItems',items:items});
     if(res && res.ok){
       toast('הפריטים נשמרו ✓');
+      // Optimistic: the saved draft IS the new authoritative items list. Update STATE
+      // locally and render — no full data re-pull. We deliberately do NOT reseed lastFp:
+      // the backend write bumped the fingerprint, so the next ping reconciles via refresh().
+      STATE.items = items; ITEMS = buildItems(STATE.items);
       itemsDraft=null;            // clear so next open re-clones from updated ITEMS
-      await refresh();            // re-pull -> buildItems -> live grid updated
+      render();                   // repaint live grid from the new ITEMS
       renderItemsEditor();        // redraw editor from the fresh ITEMS
     }else{
       toast('שגיאה: '+((res&&res.error)||'שמירה נכשלה'));  // keep draft for retry
@@ -884,8 +901,10 @@ async function saveNote(){
   const subs=noteSubs.join(', ');
   const note=$('#noteText').value.trim();
   const slot=selectedSlot;
+  const slotObj=STATE.sessions.find(s=>s.id===slot);
+  const sessionStart=slotObj? (slotObj.start||'') : '';
   const payload={action:'addEvent',sessionId:slot,itemType:key,
-    note:note,reportedAt:inputToIso($('#noteTime').value),caregiver:caregiver,subItems:subs};
+    note:note,reportedAt:inputToIso($('#noteTime').value),caregiver:caregiver,subItems:subs,sessionStart:sessionStart};
   closeSheets();
   // Optimistic: add the event locally and show feedback immediately, then POST in background.
   const id=tmpId();
@@ -1088,6 +1107,8 @@ $('#logoutBtn').onclick=doLogout;
 $('#passSave').onclick=savePass;
 $('#navLive').onclick=()=>showView('live');
 $('#navHist').onclick=()=>{showView('hist');loadHistory();};
+$('#histDaysUp').onclick   = ()=>{ histDays += 5; loadHistory(); };
+$('#histDaysDown').onclick = ()=>{ histDays = Math.max(5, histDays - 5); loadHistory(); };
 $('#navRetro').onclick=openRetro;
 /* Manual refresh: spin the 🔄 icon so a tap gives visible feedback (auto-sync already keeps
    things live; this is an on-demand "pull now" + reassurance for caregivers). */
