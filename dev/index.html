@@ -408,6 +408,11 @@ let passcode = localStorage.getItem(LS_PASSCODE) || '';
    unlock History because every ping overwrites it with the server's verdict. */
 let isAdmin = localStorage.getItem(LS_ROLE) === 'admin';
 let selectedSlot = null;        // sessionId the live view reports into
+let pinnedSlot = false;         // true only when the user MANUALLY picked a past slot (via "שינוי מקטע").
+                                // While pinned, sync won't move the target — so deliberate retroactive
+                                // reporting isn't yanked, even if another caregiver opens a new session.
+                                // While UNPINNED, the target always follows the active/open session, so a
+                                // wake on one device moves every other device's target to the new session.
 let pendingItem = null;         // item awaiting note in the sheet
 let retroEvents = [];           // events being built in retro sheet
 let noteSubs = [];              // sub-item labels selected in the note sheet
@@ -616,8 +621,16 @@ function render(){
 function renderSlotSelect(){
   const sel=$('#slotSelect'); const sorted=sessionsSorted();
   const op=openSession();
-  // default selection: open session, else most recent
-  if(!selectedSlot || !STATE.sessions.find(s=>s.id===selectedSlot)){
+  // Release a pin whose slot no longer exists (e.g. window scrolled past it).
+  if(pinnedSlot && !STATE.sessions.find(s=>s.id===selectedSlot)) pinnedSlot=false;
+  // Target selection:
+  //  - PINNED (user manually chose a past slot): keep it — don't let sync move it,
+  //    so a new wake on another device won't yank a deliberate retroactive entry.
+  //  - UNPINNED (default): always FOLLOW the active/open session (else newest). This is
+  //    what makes another caregiver's wake move this device's target to the new session.
+  if(!pinnedSlot){
+    selectedSlot = op ? op.id : (sorted[0]? sorted[0].id : null);
+  } else if(!selectedSlot){
     selectedSlot = op ? op.id : (sorted[0]? sorted[0].id : null);
   }
   if(sorted.length===0){ $('#slotBar').classList.add('hidden'); $('#targetBox').style.display='none'; return; }
@@ -831,6 +844,7 @@ async function doWake(){
     // instead of a second full refresh. The ping loop reconciles to authoritative rows.
     const prev=openSession(); if(prev){ prev.end=start; prev.closedBy='auto'; }
     STATE.sessions.push({id:res.sessionId,caregiver:caregiver,start:start,end:'',closedBy:'',createdAt:start});
+    pinnedSlot=false;                       // opening a session = follow the active slot
     selectedSlot=res.sessionId; render();   // rebuilds buttons -> shows the now-visible sleep btn
     toast('מקטע חדש נפתח ☀️');
   } else { btnRestore(btn); toast('שגיאה: '+res.error); }
@@ -1083,7 +1097,14 @@ function applyRole(){
 /* ---------- wire up ---------- */
 $('#wakeBtn').onclick=doWake;
 $('#sleepBtn').onclick=doSleep;
-$('#slotSelect').onchange=e=>{selectedSlot=e.target.value;renderTarget();renderGrid();$('#slotBar').classList.add('hidden');};
+$('#slotSelect').onchange=e=>{
+  selectedSlot=e.target.value;
+  // Picking the OPEN session means "follow the active slot" -> unpin; picking a PAST slot
+  // pins the target so sync won't move it off the user's deliberate retroactive choice.
+  const op=openSession();
+  pinnedSlot = !(op && selectedSlot===op.id);
+  renderTarget();renderGrid();$('#slotBar').classList.add('hidden');
+};
 $('#targetChange').onclick=()=>$('#slotBar').classList.toggle('hidden');
 $('#noteSave').onclick=saveNote;
 $('#noteCancel').onclick=closeSheets;
