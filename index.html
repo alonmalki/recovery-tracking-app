@@ -137,6 +137,9 @@
   .ghost{width:100%;margin-top:8px;background:none;border:none;color:var(--muted);font-family:'Heebo';
     font-size:.9rem;padding:10px;cursor:pointer;}
   .ghost.danger{color:#c0392b;font-weight:600;}
+  .histctl{display:flex;align-items:center;justify-content:center;gap:14px;margin:8px 0 4px;font-weight:600}
+  .histctl button{min-width:44px}
+  .histnote{text-align:center;color:#8a93a3;font-size:12px;margin:0 0 12px}
 
   /* Full-screen lock shown until a valid passcode is entered. Sits ABOVE app
      content/nav (z-index 65) but BELOW the scrim (70) and passcode sheet (80),
@@ -147,6 +150,16 @@
   .gate .glock{font-size:2.4rem;}
   .gate .gtitle{font-size:1.15rem;font-weight:700;}
   .gate .gsub{color:var(--muted);font-size:.9rem;}
+  /* Honest load gate: covers the app until the single boot data fetch lands,
+     so nothing behind it is tappable on empty/untrusted STATE. Below the passcode
+     gate (z-index 65) so a bad code still raises the passcode sheet on top. */
+  .syncwrap{position:fixed;inset:0;background:var(--bg);z-index:60;display:none;
+    flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:24px;}
+  .syncwrap.show{display:flex;}
+  .syncwrap .sbig{width:34px;height:34px;border:3px solid var(--line);border-top-color:var(--accent);
+    border-radius:50%;animation:rot .7s linear infinite;}
+  .syncwrap .stitle{font-size:1.1rem;font-weight:700;}
+  body.dev .syncwrap{outline:4px solid #c0392b;outline-offset:-4px;}
 
   /* History list */
   .hsession{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px;margin-bottom:12px;box-shadow:var(--shadow);}
@@ -211,6 +224,11 @@
   <div class="gtitle">נדרש קוד כניסה</div>
   <div class="gsub">הזינו את הקוד המשותף כדי לגשת ליומן.</div>
 </div>
+<!-- Honest load gate: shown after the passcode passes, until the first data load lands. -->
+<div class="syncwrap" id="syncOverlay">
+  <div class="sbig"></div>
+  <div class="stitle" id="syncMsg">מסנכרן את המצב העדכני…</div>
+</div>
 <div class="app">
   <header>
     <div>
@@ -248,6 +266,14 @@
 
   <!-- HISTORY VIEW -->
   <section id="histView" class="hidden">
+    <!-- Window control: sets how many days of data the WHOLE app loads (live + history).
+         ±1 day, persisted per-device. Changing it re-fetches the single window. -->
+    <div class="histctl">
+      <button id="windowDaysDown" class="ghost">−</button>
+      <span id="windowDaysLabel"></span>
+      <button id="windowDaysUp" class="ghost">+</button>
+    </div>
+    <div class="histnote">חלון הנתונים לכל האפליקציה (כולל המסך הראשי)</div>
     <div id="histList"></div>
   </section>
 
@@ -382,11 +408,29 @@ let passcode = localStorage.getItem(LS_PASSCODE) || '';
    unlock History because every ping overwrites it with the server's verdict. */
 let isAdmin = localStorage.getItem(LS_ROLE) === 'admin';
 let selectedSlot = null;        // sessionId the live view reports into
+let pinnedSlot = false;         // true only when the user MANUALLY picked a past slot (via "שינוי מקטע").
+                                // While pinned, sync won't move the target — so deliberate retroactive
+                                // reporting isn't yanked, even if another caregiver opens a new session.
+                                // While UNPINNED, the target always follows the active/open session, so a
+                                // wake on one device moves every other device's target to the new session.
 let pendingItem = null;         // item awaiting note in the sheet
 let retroEvents = [];           // events being built in retro sheet
 let noteSubs = [];              // sub-item labels selected in the note sheet
 let retroSubs = [];             // sub-item labels selected for the next retro item
 let itemsDraft = null;          // admin working copy of ITEMS while editing the items tab
+
+/* ---------- data window tuning ----------
+   ONE window (in days) drives the WHOLE app — both the live tab and the History tab
+   read from the same single fetch of the last `windowDays` days. No two-phase load:
+   one fetch on boot fills everything, then the fingerprint ping keeps it fresh. The
+   backend returns everything if its flag is off / it's old (safe upper bound we ASK for).
+   `windowDays` is user-adjustable (±1 via the stepper) and PERSISTED per-device in
+   localStorage, so a caregiver's chosen window survives reloads. */
+const DEFAULT_WINDOW_DAYS = 5;  // first-load window before the user adjusts it
+const LS_WINDOW = 'sivan_windowdays_' + ENV_NS;   // per-env persisted window size
+function loadWindowDays(){ const v = parseInt(localStorage.getItem(LS_WINDOW), 10); return (v && v > 0) ? v : DEFAULT_WINDOW_DAYS; }
+let windowDays = loadWindowDays();   // current window (days) for the whole app
+let loaded = false;             // false until the single boot fetch lands; gates the load overlay
 
 /* ---------- live sync tuning ---------- */
 const POLL_MS = 5000;           // how often to cheaply check for changes (easy to change)
@@ -426,8 +470,13 @@ function dropTmp(ids){
 }
 
 /* ---------- API ---------- */
-async function apiGet(){
-  const r = await fetch(API_URL + '?code=' + encodeURIComponent(passcode)); return r.json();
+/* GET state. Optional window param {days:K} -> last K days (honored only when the backend
+   flag is on; an old/flag-off backend ignores it and returns everything — graceful
+   degradation). No param -> full dataset. */
+async function apiGet(params){
+  let url = API_URL + '?code=' + encodeURIComponent(passcode);
+  if(params && params.days!=null) url += '&days=' + encodeURIComponent(params.days);
+  const r = await fetch(url); return r.json();
 }
 async function apiPost(payload){
   // text/plain avoids CORS preflight with Apps Script
@@ -445,23 +494,81 @@ async function apiPing(){
     body:JSON.stringify({action:'ping',code:passcode})});
   return r.json();
 }
+/* Ongoing full-refresh used by ping / safety-net / manual 🔄 / window change. Pulls the
+   single `windowDays` window that feeds the WHOLE app (live + history). Seeds lastFp from
+   the SERVER fingerprint (data.fp) so a write that landed while this read was in flight is
+   caught on the next ping; falls back to clientFp() only when no fp is returned (old/flag-off
+   backend). */
 async function refresh(){
   if(!passcode){ openPass(); return; }
   $('#connState').innerHTML = '<span class="spin"></span> טוען נתונים…';
   try{
-    const data = await apiGet();
+    const data = await apiGet({days: windowDays});
     if(data && data.error==='bad_passcode'){
       $('#connState').textContent='🔒 קוד שגוי';
       passcode=''; localStorage.removeItem(LS_PASSCODE); showGate(); return;
     }
     STATE.sessions = data.sessions||[]; STATE.events = data.events||[];
     STATE.items = data.items||[]; ITEMS = buildItems(STATE.items);
-    lastFp = clientFp();   // seed/refresh fingerprint so the next ping won't trigger a redundant full refresh
+    lastFp = (data.fp!=null) ? data.fp : clientFp();   // prefer server fp (avoids the in-flight-write race)
     $('#connState').textContent = 'מחובר · עודכן ' + new Date().toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit'});
     render();
   }catch(e){
     $('#connState').textContent = '⚠️ אין חיבור — בדקו את כתובת ה-API';
   }
+}
+
+/* ---------- honest load gate + single-fetch boot ----------
+   One fetch of the last `windowDays` days fills the entire app (live + history). Until it
+   lands we cannot trust empty STATE (asleep/no-items vs not-loaded-yet), so a full-screen
+   overlay blocks everything. The data-model guarantees the open session is always returned
+   (a new wake auto-closes the prior open one ⇒ it's the newest by start, always in-window;
+   the backend also force-includes any open session regardless of age), so the wake/sleep
+   button and active slot are correct the instant the fetch lands. After it lands, the
+   fingerprint ping keeps everything live. (No phase 1/phase 2 — measured to roughly double
+   startup for no real gain, since Apps Script's per-request floor dwarfs data size.) */
+function showSyncOverlay(msg){ $('#syncMsg').textContent = msg || 'מסנכרן את המצב העדכני…'; $('#syncOverlay').classList.add('show'); }
+function hideSyncOverlay(){ $('#syncOverlay').classList.remove('show'); }
+
+async function boot(){
+  if(!passcode){ openPass(); return; }
+  showSyncOverlay('מסנכרן את המצב העדכני…');
+  // Block until the single window fetch lands. Retry on connection failure.
+  while(!loaded){
+    try{
+      const d = await apiGet({days: windowDays});
+      if(d && d.error==='bad_passcode'){
+        hideSyncOverlay();
+        passcode=''; localStorage.removeItem(LS_PASSCODE); showGate(); return;
+      }
+      if(!d || d.ok===false) throw new Error('bad boot response');
+      STATE.sessions = d.sessions||[]; STATE.events = d.events||[];
+      STATE.items = d.items||[]; ITEMS = buildItems(STATE.items);
+      lastFp = (d.fp!=null) ? d.fp : clientFp();   // seed from server fp (avoids in-flight-write race)
+      loaded = true;
+      $('#connState').textContent = 'מחובר · עודכן ' + new Date().toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit'});
+      render();
+      hideSyncOverlay();
+    }catch(e){
+      showSyncOverlay('אין חיבור — מנסה שוב…');
+      await new Promise(r=>setTimeout(r, 1500));
+    }
+  }
+  startSync();   // fingerprint ping keeps the single window fresh from here on
+}
+
+/* Change the app-wide window by `delta` days (stepper). Floors at 1, persists per-device,
+   and re-fetches the new window (which repaints both live and history). */
+async function changeWindow(delta){
+  const next = Math.max(1, windowDays + delta);
+  if(next === windowDays) return;
+  windowDays = next;
+  localStorage.setItem(LS_WINDOW, String(windowDays));
+  renderWindowCtl();
+  await refresh();
+}
+function renderWindowCtl(){
+  const lbl = $('#windowDaysLabel'); if(lbl) lbl.textContent = windowDays + ' ימים';
 }
 
 /* Mirror of the backend fingerprint_(): "<sessionsLastRow>.<eventsLastRow>.<latestStamp>".
@@ -514,16 +621,26 @@ function render(){
 function renderSlotSelect(){
   const sel=$('#slotSelect'); const sorted=sessionsSorted();
   const op=openSession();
-  // default selection: open session, else most recent
-  if(!selectedSlot || !STATE.sessions.find(s=>s.id===selectedSlot)){
+  // Release a pin whose slot no longer exists (e.g. window scrolled past it).
+  if(pinnedSlot && !STATE.sessions.find(s=>s.id===selectedSlot)) pinnedSlot=false;
+  // Target selection:
+  //  - PINNED (user manually chose a past slot): keep it — don't let sync move it,
+  //    so a new wake on another device won't yank a deliberate retroactive entry.
+  //  - UNPINNED (default): always FOLLOW the active/open session (else newest). This is
+  //    what makes another caregiver's wake move this device's target to the new session.
+  if(!pinnedSlot){
+    selectedSlot = op ? op.id : (sorted[0]? sorted[0].id : null);
+  } else if(!selectedSlot){
     selectedSlot = op ? op.id : (sorted[0]? sorted[0].id : null);
   }
   if(sorted.length===0){ $('#slotBar').classList.add('hidden'); $('#targetBox').style.display='none'; return; }
-  sel.innerHTML = sorted.map(s=>{
+  $('#slotBar').classList.remove('hidden');
+  let html = sorted.map(s=>{
     const label = (s.end? fmtTime(s.start)+' – '+fmtHM(s.end) : fmtTime(s.start)+' · פעיל')
       + (s.caregiver? ' · '+s.caregiver:'');
     return `<option value="${s.id}" ${s.id===selectedSlot?'selected':''}>${label}</option>`;
   }).join('');
+  sel.innerHTML = html;
   renderTarget();
 }
 
@@ -562,11 +679,18 @@ function renderGrid(){
   else note.classList.add('hidden');
 }
 
+/* ---------- history tab ----------
+   History reads from the SAME single window as the live tab (STATE) — one fetch feeds
+   both. The window size (days) is the app-wide `windowDays`, adjustable via the stepper
+   in this view. No separate History fetch. */
+function histSessionsSorted(){ return [...STATE.sessions].sort((a,b)=>new Date(b.start)-new Date(a.start)); }
+function histEventsFor(id){ return STATE.events.filter(e=>e.sessionId===id); }
 function renderHistory(){
-  const list=$('#histList'); const sorted=sessionsSorted();
+  renderWindowCtl();
+  const list=$('#histList'); const sorted=histSessionsSorted();
   if(sorted.length===0){ list.innerHTML='<div class="empty">עדיין אין תיעוד.<br>התחילו מ\"סיוון התעוררה\".</div>'; return; }
   list.innerHTML = sorted.map(s=>{
-    const evs = eventsFor(s.id).sort((a,b)=>new Date(a.reportedAt)-new Date(b.reportedAt));
+    const evs = histEventsFor(s.id).sort((a,b)=>new Date(a.reportedAt)-new Date(b.reportedAt));
     const closedTag = s.end ? (s.closedBy==='auto'
         ? '<span class="tag auto">לא נסגר ע״י המשתמש</span>'
         : '<span class="tag">נסגר</span>')
@@ -682,8 +806,12 @@ async function itemsSaveDraft(){
     const res=await apiPost({action:'saveItems',items:items});
     if(res && res.ok){
       toast('הפריטים נשמרו ✓');
+      // Optimistic: the saved draft IS the new authoritative items list. Update STATE
+      // locally and render — no full data re-pull. We deliberately do NOT reseed lastFp:
+      // the backend write bumped the fingerprint, so the next ping reconciles via refresh().
+      STATE.items = items; ITEMS = buildItems(STATE.items);
       itemsDraft=null;            // clear so next open re-clones from updated ITEMS
-      await refresh();            // re-pull -> buildItems -> live grid updated
+      render();                   // repaint live grid from the new ITEMS
       renderItemsEditor();        // redraw editor from the fresh ITEMS
     }else{
       toast('שגיאה: '+((res&&res.error)||'שמירה נכשלה'));  // keep draft for retry
@@ -716,6 +844,7 @@ async function doWake(){
     // instead of a second full refresh. The ping loop reconciles to authoritative rows.
     const prev=openSession(); if(prev){ prev.end=start; prev.closedBy='auto'; }
     STATE.sessions.push({id:res.sessionId,caregiver:caregiver,start:start,end:'',closedBy:'',createdAt:start});
+    pinnedSlot=false;                       // opening a session = follow the active slot
     selectedSlot=res.sessionId; render();   // rebuilds buttons -> shows the now-visible sleep btn
     toast('מקטע חדש נפתח ☀️');
   } else { btnRestore(btn); toast('שגיאה: '+res.error); }
@@ -773,8 +902,10 @@ async function saveNote(){
   const subs=noteSubs.join(', ');
   const note=$('#noteText').value.trim();
   const slot=selectedSlot;
+  const slotObj=STATE.sessions.find(s=>s.id===slot);
+  const sessionStart=slotObj? (slotObj.start||'') : '';
   const payload={action:'addEvent',sessionId:slot,itemType:key,
-    note:note,reportedAt:inputToIso($('#noteTime').value),caregiver:caregiver,subItems:subs};
+    note:note,reportedAt:inputToIso($('#noteTime').value),caregiver:caregiver,subItems:subs,sessionStart:sessionStart};
   closeSheets();
   // Optimistic: add the event locally and show feedback immediately, then POST in background.
   const id=tmpId();
@@ -906,7 +1037,7 @@ async function savePass(){
   localStorage.setItem(LS_PASSCODE,v);
   setRole(!!ping.admin);
   hideGate(); closeSheets();
-  await refresh(); startSync();
+  boot();   // single-fetch load (overlay → one windowDays fetch → startSync)
   if(!caregiver) setTimeout(openName,300);
 }
 
@@ -966,7 +1097,14 @@ function applyRole(){
 /* ---------- wire up ---------- */
 $('#wakeBtn').onclick=doWake;
 $('#sleepBtn').onclick=doSleep;
-$('#slotSelect').onchange=e=>{selectedSlot=e.target.value;renderTarget();renderGrid();$('#slotBar').classList.add('hidden');};
+$('#slotSelect').onchange=e=>{
+  selectedSlot=e.target.value;
+  // Picking the OPEN session means "follow the active slot" -> unpin; picking a PAST slot
+  // pins the target so sync won't move it off the user's deliberate retroactive choice.
+  const op=openSession();
+  pinnedSlot = !(op && selectedSlot===op.id);
+  renderTarget();renderGrid();$('#slotBar').classList.add('hidden');
+};
 $('#targetChange').onclick=()=>$('#slotBar').classList.toggle('hidden');
 $('#noteSave').onclick=saveNote;
 $('#noteCancel').onclick=closeSheets;
@@ -976,7 +1114,9 @@ $('#nameSave').onclick=saveName;
 $('#logoutBtn').onclick=doLogout;
 $('#passSave').onclick=savePass;
 $('#navLive').onclick=()=>showView('live');
-$('#navHist').onclick=()=>{showView('hist');renderHistory();};
+$('#navHist').onclick=()=>{showView('hist');renderHistory();};   // reads from STATE, no fetch
+$('#windowDaysUp').onclick   = ()=>changeWindow(+1);   // app-wide window, ±1 day, persisted
+$('#windowDaysDown').onclick = ()=>changeWindow(-1);
 $('#navRetro').onclick=openRetro;
 /* Manual refresh: spin the 🔄 icon so a tap gives visible feedback (auto-sync already keeps
    things live; this is an on-demand "pull now" + reassurance for caregivers). */
@@ -1006,8 +1146,7 @@ if(API_URL.startsWith('PASTE')){
 }else if(!passcode){
   showGate();              // no code on this device -> hard lock, ask for it
 }else{
-  refresh();               // a bad_passcode response will raise the gate
-  startSync();
+  boot();                  // single-fetch load; a bad_passcode response raises the gate
   if(!caregiver) setTimeout(openName,400);
 }
 </script>
